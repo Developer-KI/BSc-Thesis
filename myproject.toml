@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Thesis"
+description = "Optimal portfolio strategies for a large universe of assets"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    { name = "Kiril Ivanov", email = "ivanov.r.kiril@abv.bg" },
+]
+license = "MIT"
+dependencies = []
+
+[tool.setuptools]
+# 1. Map the root import path to the 'src' directory
+package-dir = {"" = "src"}
+
+# 2. Tell it to find all sub-packages (folders with __init__.py) inside 'src'
+[tool.setuptools.packages.find]
+where = ["src"]
