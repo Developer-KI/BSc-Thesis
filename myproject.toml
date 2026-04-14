@@ -11,12 +11,25 @@ authors = [
     { name = "Kiril Ivanov", email = "ivanov.r.kiril@abv.bg" },
 ]
 license = "MIT"
-dependencies = []
+dependencies = [
+    tensorflow,
+    keras,
+    pandas,
+    numpy,
+    scipy,
+    scikit-learn,
+    openpyxl,
+    tqdm,
+    matplotlib,
+    plotly,
+    pyportfolioopt, 
+    optuna
+]
 
 [tool.setuptools]
-# 1. Map the root import path to the 'src' directory
+Map the root import path to the 'src' directory
 package-dir = {"" = "src"}
 
-# 2. Tell it to find all sub-packages (folders with __init__.py) inside 'src'
 [tool.setuptools.packages.find]
+Tell it to find all sub-packages (folders with __init__.py) inside 'src'
 where = ["src"]
