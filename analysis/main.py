@@ -1,16 +1,22 @@
+import sys
 import numpy as np
 import pandas as pd
 import tensorflow as tf2
 import warnings
-import matplotlib.pyplot as plt
-import os
 import optuna
 from tqdm import tqdm
+from pathlib import Path
 from scipy.spatial import distance
 from numpy import linalg as la
-from scipy.cluster.hierarchy import linkage, dendrogram
+from scipy.cluster.hierarchy import linkage
 # Need to cite to use in published work
 from pypfopt import EfficientFrontier, risk_models, expected_returns, objective_functions
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from utils.plotting import (
+    plot_dendrogram, plot_cumulative_returns, plot_drawdown,
+    plot_rolling_sharpe, plot_sharpe_bar, plot_performance_summary,
+)
 
 # --- ENVIRONMENT SETUP ---
 tf = tf2.compat.v1
@@ -19,8 +25,6 @@ tf.logging.set_verbosity(tf.logging.ERROR)
 warnings.filterwarnings('ignore')
 real_type = tf.float32
 
-if not os.path.exists('./results'):
-    os.makedirs('./results')
 
 # --- MATHEMATICAL UTILITIES ---
 
@@ -127,14 +131,13 @@ def objective(trial, X_data, Y_data):
         return sess.run(loss, feed_dict={inputs: X_data, labels_ph: Y_data})
 
 # --- DATA LOADING & SYNC ---
-START_DATE = ""
+START_DATE = "2021-06-01"
 END_DATE = ""
 
-# Lookabck period for all strategies
+# HYPERPARAMETERS
 PM_cov_window = 66
-
-# HSP Strategy Parameters
-n_corr, N_Drivers_Selection = 125, 12
+N_CORR = 125
+N_DRIVERS_SELECTION = 12
 
 Drivers = pd.read_excel(r'./data/Drivers_no_SB_Sectors.xlsx').set_index("Date")
 Constituents = pd.read_excel(r'./data/Assets_SPX.xlsx').set_index('Date')
@@ -148,7 +151,13 @@ Data_Drivers_shift0 = pd.merge(Drivers, Data_Assets, left_index=True, right_inde
 if START_DATE != "":
     Data_Drivers_shift0 = Data_Drivers_shift0.loc[START_DATE:]
 
-dates_series = Data_Drivers_shift0.index[n_corr::22]
+actual_start = Data_Drivers_shift0.index[0].strftime('%Y-%m-%d')
+actual_end   = END_DATE if END_DATE != "" else Data_Drivers_shift0.index[-1].strftime('%Y-%m-%d')
+RESULTS_DIR  = Path(__file__).resolve().parent.parent / 'results' / f'{actual_start}_to_{actual_end}'
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+print(f"Results will be saved to: {RESULTS_DIR}")
+
+dates_series = Data_Drivers_shift0.index[N_CORR::22]
 
 # Storage
 weights_history = {m: pd.DataFrame() for m in ['HSP', 'HRP', 'MinVol', 'MaxSharpe', 'Max_Util', 'Robust_MinVol', 'Robust_MaxSharpe', 'Robust_Max_Util', '1/N']}
@@ -168,15 +177,15 @@ for rebalance_date in tqdm(dates_series, desc="Monthly Optimization"):
     
     # Create Sensitivity Matrix
     driver_candidates = Drivers.columns
-    corr_block = Data_Drivers_shift0.iloc[ii-n_corr:ii].corr().fillna(0)
+    corr_block = Data_Drivers_shift0.iloc[ii-N_CORR:ii].corr().fillna(0)
     vote_counts = pd.Series(0, index=driver_candidates)
     
     for asset in Assets_Names:
         asset_corrs = corr_block[asset].loc[driver_candidates].abs()
-        top_for_asset = asset_corrs.nlargest(N_Drivers_Selection).index
+        top_for_asset = asset_corrs.nlargest(N_DRIVERS_SELECTION).index
         vote_counts[top_for_asset] += 1
     
-    selected_drivers = vote_counts.nlargest(N_Drivers_Selection).index.tolist()
+    selected_drivers = vote_counts.nlargest(N_DRIVERS_SELECTION).index.tolist()
     
     sens_results = []
     for asset in Assets_Names:
@@ -200,7 +209,7 @@ for rebalance_date in tqdm(dates_series, desc="Monthly Optimization"):
             sess.run(tf.global_variables_initializer())
             for _ in range(50): sess.run(train_op, feed_dict={inputs: X_pde, labels_ph: Y})
             sens_vals = sess.run(greeks_op, feed_dict={inputs: X_pde})
-            sens_results.append(np.append(np.nan_to_num(np.mean(sens_vals, axis=0))[:N_Drivers_Selection], asset))
+            sens_results.append(np.append(np.nan_to_num(np.mean(sens_vals, axis=0))[:N_DRIVERS_SELECTION], asset))
 
     # 1. HSP 
     df_sens = pd.DataFrame(sens_results, columns=selected_drivers + ["Asset"]).set_index("Asset").astype(float).reindex(Assets_Names)
@@ -250,47 +259,73 @@ for rebalance_date in tqdm(dates_series, desc="Monthly Optimization"):
         is_metrics.append({'Date': rebalance_date, 'Strategy': name, 'Sharpe': (ret_is.mean()/ret_is.std())*np.sqrt(252)})
 
 # --- GENERATE OUTPUTS ---
-# Dendrogram Plots
-print("Saving Dendrograms...")
-for link, name in zip([last_hsp_link, last_hrp_link], ["HSP (Sensitivity)", "HRP (Correlation)"]):
-    plt.figure(figsize=(10, 6))
-    dendrogram(link, labels=Assets_Names, leaf_rotation=90)
-    plt.title(f"{name} Hierarchy - Last Window")
-    plt.tight_layout()
-    plt.savefig(f'./results/{name.split()[0]}_Dendrogram_{START_DATE}.png')
-    plt.close()
+print(f"\nSaving results to: {RESULTS_DIR}")
 
-# Out-of-Sample Performance
+# Dendrograms
+print("Saving Dendrograms...")
+for link, label in zip([last_hsp_link, last_hrp_link], ["HSP", "HRP"]):
+    plot_dendrogram(
+        link, Assets_Names,
+        title=f"{label} Hierarchy – Last Rebalance Window",
+        save_path=str(RESULTS_DIR / f"{label}_Dendrogram.png"),
+    )
+
+# Out-of-Sample returns
 oos_returns = pd.DataFrame()
 for i in range(len(Data_Assets)):
     dt = Data_Assets.index[i]
     daily = {'Date': dt}
     for name in weights_history:
         v_w = weights_history[name][weights_history[name]['Date'] <= dt]
-        if not v_w.empty: daily[name] = Data_Assets.iloc[i].dot(v_w.iloc[-1][Assets_Names].astype(float))
-    if len(daily) > 1: oos_returns = pd.concat([oos_returns, pd.DataFrame([daily])], ignore_index=True)
+        if not v_w.empty:
+            daily[name] = Data_Assets.iloc[i].dot(v_w.iloc[-1][Assets_Names].astype(float))
+    if len(daily) > 1:
+        oos_returns = pd.concat([oos_returns, pd.DataFrame([daily])], ignore_index=True)
 
 oos_returns.set_index('Date', inplace=True)
-plt.figure(figsize=(12, 6))
-(1 + oos_returns).cumprod().plot(ax=plt.gca(), title="OOS Cumulative Returns Strategy Comparison")
-plt.grid(True); plt.savefig(f'./results/OOS_Performance_{START_DATE}.png'); plt.close()
 
-# In-Sample Metrics Bar Chart
+plot_cumulative_returns(
+    oos_returns,
+    title="OOS Cumulative Returns – Strategy Comparison",
+    save_path=str(RESULTS_DIR / "OOS_Cumulative_Returns.png"),
+)
+plot_drawdown(
+    oos_returns,
+    title="OOS Drawdown",
+    save_path=str(RESULTS_DIR / "OOS_Drawdown.png"),
+)
+plot_rolling_sharpe(
+    oos_returns,
+    title="OOS Rolling Sharpe Ratio",
+    save_path=str(RESULTS_DIR / "OOS_Rolling_Sharpe.png"),
+)
+
+# In-Sample Sharpe
 is_summary = pd.DataFrame(is_metrics).groupby('Strategy')['Sharpe'].mean()
-plt.figure(figsize=(10, 5))
-is_summary.plot(kind='bar', color='teal', title="Average In-Sample Sharpe (Model Calibration)")
-plt.ylabel("Sharpe Ratio")
-plt.savefig(f'./results/IS_Comparison_{START_DATE}.png'); plt.close()
+plot_sharpe_bar(
+    is_summary,
+    title="Average In-Sample Sharpe (Model Calibration)",
+    save_path=str(RESULTS_DIR / "IS_Sharpe_Comparison.png"),
+)
 
-# Final Comparison Table
+# Final stats table
+cum_returns = (1 + oos_returns).cumprod()
+max_dd = ((cum_returns / cum_returns.cummax()) - 1).min() * 100
+
 stats = pd.DataFrame({
     'Ann. Return (%)': oos_returns.mean() * 252 * 100,
     'Ann. Vol (%)': oos_returns.std() * np.sqrt(252) * 100,
     'Sharpe Ratio': (oos_returns.mean() * 252) / (oos_returns.std() * np.sqrt(252)),
-    'Train Sharpe Ratio': is_summary
+    'Max Drawdown (%)': max_dd,
+    'Train Sharpe Ratio': is_summary,
 })
-stats.to_excel(f'./results/Performance_Summary_{START_DATE}.xlsx')
+
+plot_performance_summary(
+    stats[['Ann. Return (%)', 'Ann. Vol (%)', 'Sharpe Ratio', 'Max Drawdown (%)']],
+    save_path=str(RESULTS_DIR / "Performance_Summary_Panel.png"),
+)
+stats.to_excel(str(RESULTS_DIR / "Performance_Summary.xlsx"))
 
 print("\n--- Final Metrics Summary ---")
 print(stats)
-print("\nProcess Complete. Check the './results' directory for plots and the metrics spreadsheet")
+print(f"\nProcess Complete. Results saved to: {RESULTS_DIR}")

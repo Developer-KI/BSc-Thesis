@@ -12,6 +12,7 @@ authors = [
 ]
 license = "MIT"
 dependencies = [
+    yfinance,
     tensorflow,
     keras,
     pandas,
