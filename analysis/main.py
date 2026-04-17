@@ -132,7 +132,7 @@ def objective(trial, X_data, Y_data):
 
 # --- DATA LOADING & SYNC ---
 START_DATE = "2021-06-01"
-END_DATE = ""
+END_DATE = "2022-06-01"
 
 # HYPERPARAMETERS
 N_DRIVERS_SELECTION = 12
@@ -230,7 +230,7 @@ for rebalance_date in tqdm(dates_series, desc="Monthly Optimization"):
     # 4. Benchmark 1/N
     w_equal = pd.Series(1/len(Assets_Names), index=Assets_Names)
 
-    # 5. Robust Ledoit-Wolf + L2 Regularization
+    # 5. Robust: Ledoit-Wolf + L2 Regularization
     S_robust = risk_models.CovarianceShrinkage(lookback_prices).ledoit_wolf()
 
     ef_robust = EfficientFrontier(mu, S_robust)
