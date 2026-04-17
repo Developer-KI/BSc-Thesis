@@ -11,78 +11,75 @@ warnings.filterwarnings('ignore')
 
 URL = "https://raw.githubusercontent.com/Ate329/top-us-stock-tickers/main/tickers/sp500.csv"
 YEARS = 10
+MIN_YEARS = 5
 ROOT = Path(__file__).resolve().parent.parent
 
-def yf_assets_data(tickers: List[str], years: float | None = None) -> pd.DataFrame:
-    # Calculate date range in years
+def yf_assets_data(tickers: List[str], years: float) -> pd.DataFrame:
     end_date = datetime.now()
-    start_date = end_date - timedelta(days= years *365)  # Approx 30 years
-    
+    start_date = end_date - timedelta(days=years * 365)
+
     print(f"Downloading data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
     print("-" * 50)
 
+    close_series = {}
 
     for ticker in tqdm(tickers, desc="Downloading tickers", unit="ticker"):
-        # Download data for all tickers
-        print(f"Downloading ({ticker})...")
         try:
-            # Download data
-            data = yf.download(ticker, start=start_date, end=end_date) 
-            # Keep only relevant columns and rename them
-            data = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-            print(data.columns)
-            print(f"  Successfully downloaded {len(data)} rows")
+            data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+            if data.empty:
+                print(f"  No data for {ticker}, skipping.")
+                continue
 
-            if data is not None:
-                df = data
-                
+            close = data['Close'].squeeze()
+            close.name = ticker
+
+            valid = close.dropna()
+            span_days = (valid.index.max() - valid.index.min()).days if len(valid) > 0 else 0
+            if span_days < MIN_YEARS * 365:
+                print(f"  Skipping {ticker}: only {span_days / 365:.1f} years of data (need {MIN_YEARS}).")
+                continue
+
+            close_series[ticker] = close
         except Exception as e:
-                print(f"  Error downloading {ticker}: {str(e)}")
-        
-        # Initial data info
-        print(type(df))
-        print(f"\nInitial data shape: {df.shape}")
-        print(f"Date range: {df.index.min()} to {df.index.max()}")
-        
-        # Step 1: Remove any rows where all data is NaN (shouldn't happen with concat, but just in case)
-        df = df.dropna(how='all')
-        
-        # Forward fill for up to 5 days (for holidays, etc.)
-        df = df.fillna(method='ffill', limit=5)
-        
-        # Backward fill for the beginning if first few days are NaN
-        df = df.fillna(method='bfill', limit=5)
-        
-        # Check for and handle any remaining NaNs
-        remaining_nulls = df.isnull().sum().sum()
-        if remaining_nulls > 0:
-            print(f"\nWarning: {remaining_nulls} NaN values remain after cleaning. Dropping these rows.")
-            df = df.dropna()
-    
+            print(f"  Error downloading {ticker}: {e}")
+
+    if not close_series:
+        raise ValueError("No data was downloaded.")
+
+    df = pd.concat(close_series.values(), axis=1)
+    df.index.name = "Date"
+
+    df = df.dropna(how='all')
+    df = df.ffill(limit=5)
+    df = df.bfill(limit=5)
+
+    remaining_nulls = df.isnull().sum().sum()
+    if remaining_nulls > 0:
+        print(f"\nWarning: {remaining_nulls} NaN values remain after cleaning. Dropping these rows.")
+        df = df.dropna()
+
+    print(f"\nFinal shape: {df.shape}")
+    print(f"Date range: {df.index.min()} to {df.index.max()}")
     return df
 
-def _save_data(df, filename='assets.csv'):
-    """
-    Save the cleaned data to CSV file
-    """
-    if df is not None:
-        path = ROOT / 'data' / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_excel(path)
-        print(f"\nData saved to {path}")
+def _save_data(df: pd.DataFrame, filename: str = 'assets.xlsx'):
+    path = ROOT / 'data' / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df_out = df.copy()
+    df_out.index = df_out.index.strftime('%m/%d/%Y')
+    df_out.to_excel(path)
+    print(f"Data saved to {path}")
 
 if __name__ == "__main__":
     spy_constituents_df = pd.read_csv(URL)
+    csv_path = ROOT / 'data' / 'sp500_tickers.csv'
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    spy_constituents_df.to_csv(csv_path, index=False)
+    print(f"SP500 tickers saved to {csv_path}")
     sp500_tickers = spy_constituents_df['symbol'].tolist()
 
-    print("SPY benchmark downloading")
-    spy = yf_assets_data(tickers=["SPY"], years=YEARS)
-    if spy is not None:
-        _save_data(spy, "benchmark.csv")
-
-    print("SPY constituents downloading...")
+    print("\nSPY constituents downloading...")
     assets = yf_assets_data(tickers=sp500_tickers, years=YEARS)
-    if assets is not None:
-        _save_data(assets, "assets.csv")
-        
+    _save_data(assets, "assets.xlsx")
+
     print("\nProcess completed successfully!")

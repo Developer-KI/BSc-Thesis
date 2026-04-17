@@ -35,4 +35,4 @@ I will also include a simple evenly split portfolio a market cap portfolio (SPY)
 ## Estimation Times
 
 One iteration is one rebalance of the portfolio (mounthly) so based on the full estimation time (currently 5 years but I have data up to 10 years to backtest)
-Iterations per second: XX it/s
+Seconds per iteration for 15 stocks: approx 25

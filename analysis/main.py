@@ -135,12 +135,14 @@ START_DATE = "2021-06-01"
 END_DATE = ""
 
 # HYPERPARAMETERS
+N_DRIVERS_SELECTION = 12
 PM_cov_window = 66
 N_CORR = 125
-N_DRIVERS_SELECTION = 12
+TRIALS = 8
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-Drivers = pd.read_excel(r'./data/Drivers_no_SB_Sectors.xlsx').set_index("Date")
-Constituents = pd.read_excel(r'./data/Assets_SPX.xlsx').set_index('Date')
+Drivers = pd.read_excel(r'./data/sensitivity_drivers.xlsx').set_index("Date")
+Constituents = pd.read_excel(r'./data/test_assets.xlsx').set_index('Date')
 
 Data_Assets = Constituents.pct_change(1).fillna(0).astype(float)
 Assets_Names = Data_Assets.columns.values
@@ -160,13 +162,9 @@ print(f"Results will be saved to: {RESULTS_DIR}")
 dates_series = Data_Drivers_shift0.index[N_CORR::22]
 
 # Storage
-weights_history = {m: pd.DataFrame() for m in ['HSP', 'HRP', 'MinVol', 'MaxSharpe', 'Max_Util', 'Robust_MinVol', 'Robust_MaxSharpe', 'Robust_Max_Util', '1/N']}
+weights_history = {m: pd.DataFrame() for m in ['HSP', 'HRP', 'MinVol', 'MaxSharpe', 'Robust_MinVol', 'Robust_MaxSharpe', '1/N']}
 is_metrics = []
 last_hsp_link, last_hrp_link = None, None
-
-# Seatch Depth
-TRIALS = 8
-optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # --- CORE BACKTEST LOOP ---
 for rebalance_date in tqdm(dates_series, desc="Monthly Optimization"):
@@ -243,14 +241,8 @@ for rebalance_date in tqdm(dates_series, desc="Monthly Optimization"):
     ef_robust.add_objective(objective_functions.L2_reg, gamma=0.1)
     w_robust_max = pd.Series(ef_robust.max_sharpe())
 
-    # 6. Maximization Quadratic utility
-    ef = EfficientFrontier(mu, S_risk); w_max_qu = pd.Series(ef.max_quadratic_utility)
-    ef_robust = EfficientFrontier(mu, S_robust)
-    ef_robust.add_objective(objective_functions.L2_reg, gamma=0.1)
-    w_robust_max_qu = pd.Series(ef_robust.max_quadratic_utility())
-
     # Weights Sync
-    model_list = [w_hsp, w_hrp, w_minvol, w_maxsharpe, w_max_qu, w_robust_min, w_robust_max, w_robust_max_qu, w_equal]
+    model_list = [w_hsp, w_hrp, w_minvol, w_maxsharpe, w_robust_min, w_robust_max, w_equal]
     for name, w in zip(weights_history.keys(), model_list):
         temp_w = pd.Series(w).reindex(Assets_Names).fillna(0)
         temp_w['Date'] = rebalance_date
