@@ -24,7 +24,8 @@ dependencies = [
     matplotlib,
     plotly,
     pyportfolioopt, 
-    optuna
+    optuna,
+    hmmlearn
 ]
 
 [tool.setuptools]
