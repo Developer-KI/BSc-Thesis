@@ -1,6 +1,7 @@
 # BSc_Thesis
 
 Topic: Optimal portfolio strategies for a large universe of assets
+Idea: Robustness of methods in regimes and model averaging/regime switch for better performance
 
 ## Data
 
