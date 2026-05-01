@@ -135,7 +135,35 @@ def plot_rolling_sharpe(
     return _save(fig, save_path)
 
 
-# ── 5. Sharpe Bar Chart ───────────────────────────────────────────────────────
+# ── 5. Rolling Volatility ─────────────────────────────────────────────────────
+def plot_rolling_volatility(
+    returns_df: pd.DataFrame,
+    window: int = 63,
+    title: str = "Rolling Volatility",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Annualised rolling volatility for each strategy column.
+
+    Parameters
+    ----------
+    window : rolling window in periods (default 63 ≈ 1 quarter for daily data;
+             use 12 for monthly data)
+    """
+    rolling_vol = returns_df.rolling(window).std() * np.sqrt(252)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    for i, col in enumerate(rolling_vol.columns):
+        ax.plot(rolling_vol.index, rolling_vol[col],
+                label=col, color=_PALETTE[i % len(_PALETTE)], linewidth=1.2)
+    ax.set_title(f"{title}  (window = {window} periods)")
+    ax.set_ylabel("Annualised Volatility")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
+    ax.legend(loc="upper left", fontsize=9)
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# ── 6. Sharpe Bar Chart ───────────────────────────────────────────────────────
 def plot_sharpe_bar(
     sharpe_series: pd.Series,
     title: str = "Average Sharpe Ratio by Strategy",
@@ -159,7 +187,7 @@ def plot_sharpe_bar(
     return _save(fig, save_path)
 
 
-# ── 6. Performance Summary (2×2 panel) ────────────────────────────────────────
+# ── 7. Performance Summary (2×2 panel) ────────────────────────────────────────
 def plot_performance_summary(
     stats_df: pd.DataFrame,
     save_path: Optional[str] = None,
@@ -198,7 +226,7 @@ def plot_performance_summary(
     return _save(fig, save_path)
 
 
-# ── 7. Correlation Heatmap ────────────────────────────────────────────────────
+# ── 8. Correlation Heatmap ────────────────────────────────────────────────────
 def plot_correlation_heatmap(
     returns_df: pd.DataFrame,
     title: str = "Correlation Matrix",
@@ -228,7 +256,7 @@ def plot_correlation_heatmap(
     return _save(fig, save_path)
 
 
-# ── 8. Weights Heatmap ────────────────────────────────────────────────────────
+# ── 9. Weights Heatmap ────────────────────────────────────────────────────────
 def plot_weights_heatmap(
     weights_df: pd.DataFrame,
     title: str = "Portfolio Weights Over Time",
@@ -259,7 +287,93 @@ def plot_weights_heatmap(
     return _save(fig, save_path)
 
 
-# ── 9. Stacked Area Weights ───────────────────────────────────────────────────
+# ── 10. Regime Detection ─────────────────────────────────────────────────────
+def plot_regime_detection(
+    returns: pd.Series,
+    regime_labels,
+    title: str = "Market Regime Detection",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Two-panel regime visualisation.
+
+    Top panel    – cumulative wealth curve with coloured background shading
+                   for each detected regime.
+    Bottom panel – discrete regime-state timeline (coloured horizontal bands).
+
+    Parameters
+    ----------
+    returns       : return series (daily or monthly), pd.Series with DatetimeIndex
+    regime_labels : array-like of regime names ('Bull', 'Bear', 'Crab', …) or
+                    integers; must be the same length as returns
+    """
+    if not isinstance(regime_labels, pd.Series):
+        regime_labels = pd.Series(regime_labels, index=returns.index)
+    else:
+        regime_labels = regime_labels.reindex(returns.index)
+
+    # Canonical ordering and colours; anything else falls back to _PALETTE
+    _REGIME_COLORS = {
+        "Bull":    "#4CAF50",
+        "Crab":    "#9E9E9E",
+        "Bear":    "#F44336",
+        "Neutral": "#FF9800",
+    }
+    # Preserve intuitive ordering (best → worst) where labels are recognised
+    ordered = [r for r in ("Bull", "Crab", "Neutral", "Bear")
+               if r in regime_labels.values]
+    for r in regime_labels.dropna().unique():
+        if r not in ordered:
+            ordered.append(r)
+
+    regime_color = {}
+    for i, r in enumerate(ordered):
+        regime_color[r] = _REGIME_COLORS.get(str(r), _PALETTE[i % len(_PALETTE)])
+
+    cum = (1 + returns).cumprod()
+    dates = returns.index
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(14, 9), sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+
+    # ── Panel 1: cumulative return with shaded regime periods ─────────────────
+    ax1.plot(dates, cum.values, color="black", linewidth=1.5, zorder=3)
+    for regime in ordered:
+        mask = (regime_labels == regime).values
+        ax1.fill_between(
+            dates, cum.values.flatten(), 0,
+            where=mask, color=regime_color[regime], alpha=0.22,
+            label=str(regime),
+        )
+    ax1.set_ylabel("Growth of $1")
+    ax1.set_title(title, fontsize=13)
+    ax1.yaxis.set_major_formatter(mtick.FormatStrFormatter("%.2f"))
+    ax1.legend(loc="upper left", fontsize=9)
+
+    # ── Panel 2: discrete regime-state timeline ───────────────────────────────
+    regime_to_int = {r: i for i, r in enumerate(ordered)}
+    regime_int = regime_labels.map(regime_to_int)
+    ax2.step(dates, regime_int.values, where="post",
+             color="black", linewidth=0.8, zorder=3)
+    for regime in ordered:
+        mask = (regime_labels == regime).values
+        ax2.fill_between(
+            dates, 0, 1,
+            where=mask,
+            transform=ax2.get_xaxis_transform(),
+            color=regime_color[regime], alpha=0.40,
+        )
+    ax2.set_yticks(list(regime_to_int.values()))
+    ax2.set_yticklabels(list(regime_to_int.keys()), fontsize=9)
+    ax2.set_ylabel("Regime")
+
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# ── 11. Stacked Area Weights ──────────────────────────────────────────────────
 def plot_weights_area(
     weights_df: pd.DataFrame,
     title: str = "Portfolio Weight Allocation Over Time",

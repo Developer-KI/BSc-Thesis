@@ -22,10 +22,17 @@ dependencies = [
     openpyxl,
     tqdm,
     matplotlib,
-    plotly,
     pyportfolioopt, 
     optuna,
-    hmmlearn
+    hmmlearn,
+    chronos-forecasting,
+    timesfm,
+    jax,
+    jaxlib,
+    ipykernel,
+    pyyaml,
+    rich,
+    jupyter,
 ]
 
 [tool.setuptools]
