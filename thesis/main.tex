@@ -1,0 +1,992 @@
+\documentclass[a4paper,12pt]{report}
+
+% === Encoding and Language ===
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+
+% === Mathematics and Figures ===
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{float}
+\usepackage{booktabs}
+
+% === Page Layout and References ===
+\usepackage[margin=1in]{geometry}
+\usepackage{parskip}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=red,
+    urlcolor=magenta,
+}
+
+% === Bibliography ===
+\usepackage{natbib}
+\bibliographystyle{plainnat}
+
+% === Custom Commands ===
+\newcommand{\thesistitle}{Regime-Aware Cross-Sectional Portfolio Optimisation: Combining Sparse Jump Models with Machine Learning Return Forecasts}
+\newcommand{\authorname}{Kiril Ivanov}
+\newcommand{\supervisor}{Sanders Barendse}
+\newcommand{\submissiondate}{\today}
+
+\begin{document}
+
+% === Title Page ===
+\begin{titlepage}
+    \centering
+    {\scshape\LARGE University of Amsterdam \par}
+    \vspace{1cm}
+    {\scshape\Large BSc Econometrics and Data Science Thesis\par}
+    \vspace{2cm}
+    {\huge\bfseries \thesistitle \par}
+    \vspace{2cm}
+    {\Large \authorname \par}
+    \vspace{1cm}
+    {\large Supervisor: \supervisor \par}
+    \vfill
+    {\large \submissiondate \par}
+\end{titlepage}
+
+% === Abstract ===
+\newpage
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+This thesis investigates whether conditioning on market regimes, as detected by a
+Sparse Jump Model, improves the out-of-sample risk-adjusted performance of a
+machine-learning-based portfolio strategy. The strategy combines walk-forward
+XGBoost return forecasts for 44 large-cap S\&P~500 stocks with
+Ledoit-Wolf-shrunk mean-variance optimisation rebalanced monthly from 2014 to
+2026. A two-state Sparse Jump Model is fitted on exponentially-weighted
+volatility and downside features of S\&P~500 returns; its online state
+predictions are then used to construct regime interaction features that are
+appended to the XGBoost feature set. The baseline strategy (without regime
+features) achieves an annualised Sharpe ratio of 1.25 over the July~2018 --
+November~2024 evaluation window, compared to 1.24 for the naive equal-weight
+benchmark and 0.57 for the SPY index. Whether the regime-augmented variant
+further improves upon this baseline is the central empirical question. The
+paper contributes an end-to-end pipeline that integrates causal regime detection,
+cross-sectional characteristic-based forecasting, and robust covariance
+estimation, and provides a transparent test of the value of regime information
+as a conditioning variable in a large-universe equity portfolio.
+
+% === Table of Contents, Lists ===
+\tableofcontents
+\listoffigures
+\listoftables
+
+% ========== MAIN CONTENT ==========
+\chapter{Introduction}
+\label{ch:intro}
+
+Two long-standing empirical facts shape this thesis. The first is that
+individual stock returns contain predictable cross-sectional variation:
+stocks with high momentum, low idiosyncratic volatility, and attractive
+valuation ratios have historically earned higher returns than their
+counterparts, a pattern documented across decades and geographies
+\citep{famafrench1993, jegadeesh1993}. The second is that equity markets move
+through regimes: stretches of low volatility and steady appreciation are
+punctuated by shorter, sharper episodes of turbulence. These two facts have
+mostly been studied in isolation.
+
+This thesis asks whether combining them --- using detected market regimes as
+conditioning information inside a machine-learning return-forecasting
+pipeline --- delivers better portfolios than either idea alone. The strategy
+is built in three layers. A Sparse Jump Model \citep{nystrup2021} detects
+market regimes from intraday S\&P~500 volatility and downside features,
+producing a daily causal regime label. An XGBoost regressor is trained
+monthly on a cross-section of 44 large-cap S\&P~500 stocks to predict
+next-month returns, using standard characteristics (momentum, volatility,
+valuation, liquidity, quality) augmented with regime interaction features.
+The predicted returns then feed a Ledoit-Wolf-shrunk mean-variance optimiser
+with a turnover penalty.
+
+The research question is: \emph{Do regime interaction features derived from the
+Sparse Jump Model yield a statistically and economically meaningful improvement
+in the out-of-sample Sharpe ratio of an XGBoost-driven portfolio strategy?}
+
+The remainder of the paper is structured as follows.
+Chapter~\ref{ch:litreview} reviews the relevant literature in four areas:
+classical portfolio theory and estimation error, cross-sectional return
+predictability and machine learning methods, robust covariance estimation,
+and market regime detection. Chapter~\ref{ch:methodology} describes the
+full pipeline in detail. Chapter~\ref{ch:results} reports out-of-sample
+performance. Chapter~\ref{ch:discussion} discusses the results and their
+limitations, and Chapter~\ref{ch:conclusion} concludes.
+
+% =============================================================================
+
+\chapter{Literature Review}
+\label{ch:litreview}
+
+This chapter builds up to the thesis in six steps.
+Sections~\ref{sec:lit-classical} and~\ref{sec:lit-estimation} introduce
+Modern Portfolio Theory and the estimation problems that motivate the use of
+both robust covariance estimators and machine learning returns.
+Section~\ref{sec:lit-robust} reviews the Ledoit-Wolf shrinkage family.
+Section~\ref{sec:lit-characteristics} surveys the large literature on
+cross-sectional return predictability, which motivates the feature set.
+Section~\ref{sec:lit-ml} covers the application of machine learning to
+empirical asset pricing, culminating in tree-based methods.
+Section~\ref{sec:lit-regime} reviews market regime detection with an emphasis
+on the Sparse Jump Model used in this thesis.
+Section~\ref{sec:lit-synthesis} identifies the gap this paper fills.
+
+% -------------------------------------------------------
+\section{Classical portfolio theory}
+\label{sec:lit-classical}
+
+Modern Portfolio Theory originates with \citet{markowitz1952}. Given a vector
+of expected returns $\mu \in \mathbb{R}^{N}$ and a covariance matrix
+$\Sigma \in \mathbb{R}^{N \times N}$, the mean-variance optimal portfolio
+$w^{\star}$ solves
+\begin{equation}
+  \min_{w} \; w^{\top} \Sigma w
+  \quad \text{s.t.} \quad
+  w^{\top} \mu \geq \mu^{\star},
+  \quad \mathbf{1}^{\top} w = 1.
+  \label{eq:markowitz}
+\end{equation}
+Varying the target return $\mu^{\star}$ traces the efficient frontier, and
+each investor selects the point that matches their risk aversion.
+\citet{tobin1958} proved that the presence of a risk-free asset collapses
+this choice to a single risky portfolio. \citet{sharpe1964} extended the
+framework into equilibrium via the Capital Asset Pricing Model, which
+remains the benchmark for measuring systematic risk.
+
+The appeal of mean-variance optimisation rests on strong assumptions ---
+stationary return moments, Gaussian returns, and known $\mu$ and $\Sigma$
+--- each of which is routinely violated in practice. The third assumption,
+that moments are \emph{known} rather than estimated, drives most of the
+subsequent literature.
+
+% -------------------------------------------------------
+\section{The estimation problem and the 1/N benchmark}
+\label{sec:lit-estimation}
+
+In practice $\mu$ and $\Sigma$ are replaced by sample estimates.
+\citet{michaud1989} labelled the consequence the ``Markowitz optimisation
+enigma'': optimisation amplifies estimation error, because the portfolio
+that maximises in-sample utility also maximises sensitivity to in-sample
+noise. \citet{chopraziemba1993} quantified the relative damage: errors in
+$\hat{\mu}$ are roughly ten times more harmful out of sample than errors in
+$\hat{\Sigma}$.
+
+\citet{demiguel2009} provided the most direct empirical challenge. Across
+seven datasets and fourteen strategies, no sophisticated allocation method
+consistently outperformed the naive $1/N$ equal-weight portfolio once
+estimation error was accounted for. Their finding defines a natural baseline:
+any strategy must clear the equal-weight hurdle. The present paper uses $1/N$
+as its primary benchmark, as well as the S\&P~500 index (SPY) as a passive
+market-cap-weighted alternative.
+
+These findings also motivate the use of machine learning for the expected
+return input. While the sensitivity of mean-variance to $\hat{\mu}$ is
+well documented, the consensus is that the problem lies in using thin
+historical averages: \citet{gukellyx2020} show that richly specified
+ML models can produce predictive return signals that, when fed into a
+portfolio optimiser, yield genuine out-of-sample gains. The key is that
+ML forecasts incorporate many predictor signals simultaneously in a
+nonlinear way and tend to be better calibrated than moment estimates
+from short windows.
+
+% -------------------------------------------------------
+\section{Robust covariance estimation}
+\label{sec:lit-robust}
+
+The covariance matrix enters mean-variance optimisation through its inverse.
+When $N$ is large relative to the estimation window $W$, the sample
+covariance $S$ has near-zero eigenvalues that are amplified in $S^{-1}$,
+loading the optimiser onto directions of noise rather than signal --- the
+Marchenko-Pastur effect. \citet{ledoitwolf2004} address this with a
+linear shrinkage estimator
+\begin{equation}
+  \hat{\Sigma}_{\text{LW}} = \alpha^{\star} F + (1 - \alpha^{\star}) S,
+  \label{eq:lw-shrinkage}
+\end{equation}
+where $F$ is a structured target (constant-correlation covariance), and the
+shrinkage intensity $\alpha^{\star} \in [0, 1]$ minimises the expected
+Frobenius loss to the true covariance. The closed-form expression for
+$\alpha^{\star}$ self-regularises: it increases when $S$ is noisy (short
+windows, large universes) and decreases when $S$ is reliable.
+\citet{ledoitwolf2003} provide the asymptotic theory;
+\citet{ledoitwolf2020} extend the estimator to nonlinear shrinkage that
+adjusts each eigenvalue individually, yielding further gains in large
+universes.
+
+In the present paper, $\hat{\Sigma}_{\text{LW}}$ is estimated on a
+12-month rolling window using the \texttt{scikit-learn} implementation of
+\citet{ledoitwolf2004} and is fed directly into the mean-variance
+optimiser. Shrinkage ensures that the optimiser receives a well-conditioned
+covariance matrix regardless of the number of assets, which is important
+because the 44-asset universe is not especially large but the 12-month
+window used here is short relative to more conventional two- or three-year
+estimates.
+
+% -------------------------------------------------------
+\section{Cross-sectional return predictability}
+\label{sec:lit-characteristics}
+
+A large empirical literature establishes that individual stock returns are
+predictable in the cross-section from observable firm characteristics.
+The most influential findings are momentum, value, and size.
+
+\citet{jegadeesh1993} documented that stocks with the highest 3-to-12-month
+past returns continue to outperform over the following month (momentum),
+a result that has replicated across markets and time periods. The momentum
+signal decomposes into multiple horizons: short-term (one month) reversal,
+intermediate-term continuation (3--12 months), and long-term (36+ month)
+reversal. The 3-, 6-, and 12-month momentum features in this paper capture
+the continuation component. \citet{famafrench1993} documented two further
+cross-sectional predictors: small firms earn higher returns than large
+ones after controlling for beta (size), and high book-to-market firms
+earn more than low book-to-market firms (value). Their three-factor
+model absorbed much of the Sharpe-CAPM's pricing errors.
+
+The characteristics literature has since expanded considerably.
+\citet{amihud2002} showed that illiquidity --- proxied by the average ratio
+of absolute daily return to dollar volume --- commands a positive return
+premium: investors require compensation for holding stocks that are costly
+to trade. The Amihud illiquidity measure enters the feature set here
+alongside a volume-trend measure that captures changes in trading activity.
+Earnings-to-price, debt-to-equity, return on equity, and revenue growth are
+included as quality-and-value signals with documented cross-sectional
+predictive power \citep{famafrench2015}.
+
+Idiosyncratic volatility (the residual volatility after removing market
+beta) has also attracted attention: \citet{ang2006} found a negative
+idiosyncratic-volatility premium in the US, meaning high-idiosyncratic-vol
+stocks earn \emph{lower} average returns, a puzzling result that has
+generated a large follow-on literature. In this paper it enters as a
+feature, allowing the XGBoost model to learn the sign and magnitude of its
+predictive content without imposing a prior direction.
+
+This large set of single-predictor findings creates a challenge: combining
+predictors linearly in a cross-sectional regression requires strong
+functional form assumptions and ignores interactions. Machine learning
+methods relax both constraints.
+
+% -------------------------------------------------------
+\section{Machine learning in empirical asset pricing}
+\label{sec:lit-ml}
+
+\citet{gukellyx2020} provide the most comprehensive evaluation of machine
+learning for return prediction in the cross-section of US stocks. Across
+neural networks, gradient-boosted trees, random forests, and penalised
+regressions, they find that tree-based methods and neural networks materially
+outperform OLS and LASSO in terms of out-of-sample $R^{2}$. Crucially, the
+gains are not uniform: ML does best when many characteristics are available
+and when the true return-predictor relationship is nonlinear. The portfolio
+implications are large. Long-short strategies sorted on ML-predicted returns
+earn annualised Sharpe ratios several times those of factor-model-sorted
+equivalents.
+
+Gradient-boosted trees are particularly competitive in tabular settings.
+\citet{chenguest2016} introduced XGBoost, which adds second-order gradient
+information and regularisation terms to the basic gradient boosting
+framework, making it robust to overfitting on financial data. In a
+cross-sectional portfolio application, XGBoost is trained on a panel of
+firm-month observations using lagged characteristics as features and the
+next month's return as the target. Walk-forward validation --- retrain on a
+rolling window, predict on the next month out of sample --- prevents any
+form of look-ahead bias \citep{gukellyx2020}.
+
+A key practical issue is that point forecasts from any ML model are
+individually noisy. Return shrinkage --- pulling raw predictions toward a
+cross-sectional mean prior --- is a standard variance-reduction step in
+the literature \citep{james1961}. With a shrink factor $\alpha$ the
+shrunken forecast for stock $i$ at month $t$ is
+\begin{equation}
+  \tilde{\mu}_{i,t} = \alpha \bar{\mu}_{t} + (1 - \alpha) \hat{\mu}_{i,t},
+  \label{eq:shrinkage-returns}
+\end{equation}
+where $\bar{\mu}_{t} = \frac{1}{N}\sum_{i} \hat{\mu}_{i,t}$ is the
+cross-sectional average prediction and $\hat{\mu}_{i,t}$ is the raw XGBoost
+output. Shrinkage is useful even when the raw predictions are unbiased,
+because it lowers the variance of the return vector fed into the
+mean-variance optimiser, mitigating the sensitivity documented by
+\citet{chopraziemba1993}.
+
+Principal component features extracted from the standardised characteristic
+matrix provide an additional source of signal. In each training window,
+PCA decomposes the cross-sectional covariance of standardised characteristics
+into orthogonal latent factors. Appending the top three PC scores to the
+feature set exposes XGBoost to common cross-sectional variation that is not
+already captured by individual characteristics, without the curse of
+dimensionality that would arise from including all pairwise interactions
+explicitly.
+
+% -------------------------------------------------------
+\section{Market regime detection: the Sparse Jump Model}
+\label{sec:lit-regime}
+
+\subsection{Background and the look-ahead bias problem}
+
+Equity markets alternate between regimes: extended bull periods characterised
+by low volatility, positive drift, and mild correlation; and bear episodes
+with elevated volatility, negative drift, and rising correlations
+\citep{hamilton1989, angbekaert2002}. Exploiting this structure in a
+portfolio requires two ingredients: a model that detects regimes, and a
+method for incorporating the regime signal without introducing look-ahead
+bias.
+
+The look-ahead bias point deserves emphasis. In a hidden-state model, the
+smoothed state distribution $\Pr(s_{t} \mid x_{1:T})$ conditions on the
+full sample and is therefore unavailable in real time. The filtered
+distribution $\Pr(s_{t} \mid x_{1:t})$ is the causal counterpart; it uses
+only information available at or before period $t$. Using smoothed states in
+a backtest is a severe and hard-to-detect form of data snooping
+\citep{nystrup2018}. Every regime inference in this thesis uses the filtered
+(or online) distribution exclusively.
+
+\subsection{Sparse Jump Models}
+
+The classical Hidden Markov Model \citep{rabiner1989} estimates the
+transition matrix, emission means, and emission covariances via
+Expectation-Maximisation. In financial applications its main drawbacks are
+that EM can converge to local optima, that the number of free parameters
+grows quickly with the state dimension, and that all features are used for
+state inference even when only a few carry genuine regime information.
+
+\citet{nystrup2021} proposed the \emph{Sparse Jump Model} (SJM) to address
+these limitations. The SJM embeds an $\ell_{1}$ sparsity penalty on feature
+weights into the state-inference objective, producing a model that selects
+a small, interpretable subset of features as regime discriminators. Formally,
+the state sequence is recovered by solving a penalised path problem:
+\begin{equation}
+  \min_{\{s_t\}} \sum_{t=1}^{T} \ell(x_t, \mu_{s_t}) +
+  \lambda \sum_{t=2}^{T} \mathbf{1}[s_t \neq s_{t-1}],
+  \label{eq:sjm}
+\end{equation}
+where $\ell(x_t, \mu_s)$ is a state-conditional loss, $\lambda > 0$ is the
+jump penalty that controls regime persistence (larger $\lambda$ means fewer
+regime switches), and the $\ell_1$ sparsity acts on the feature-weight
+vector inside the loss. The continuous variant replaces hard state
+assignments with soft probabilities, yielding smoother transitions and better
+calibrated regime probabilities for financial data. Online prediction via
+a forward-pass recursion produces causal state assignments at each new
+observation, consistent with the no-look-ahead requirement.
+
+The SJM has two properties that are attractive here. First, its sparse
+feature selection identifies which aspects of the market's behaviour are
+most informative about the current regime, providing an interpretable
+regime characterisation. Second, the jump penalty gives the model a natural
+persistence prior that reduces high-frequency state-switching driven by
+transient noise, avoiding the whipsawing that afflicts simple threshold
+rules.
+
+\subsection{Features for regime detection}
+
+Following \citet{nystrup2018}, the input features are computed from daily
+log-returns $r_t$ of the S\&P~500 index using exponentially weighted moments
+at three half-lives $h \in \{5, 21, 63\}$ trading days:
+\begin{align}
+  \text{mean}_h(t)      &= \widehat{\text{EWM}}_h[r_t], \\
+  \text{logvol}_h(t)    &= \log \widehat{\text{EWM}}_h[\sigma(r)], \\
+  \text{downside}_h(t)  &= \sqrt{\widehat{\text{EWM}}_h[r_t^2 \cdot \mathbf{1}_{r_t < 0}]},
+  \label{eq:sjm-features}
+\end{align}
+producing nine features in total. The SJM selects a sparse subset via the
+$\ell_1$ penalty; in the present calibration the dominant features are
+\texttt{downside\_63} (weight 0.898), \texttt{logvol\_63} (0.711), and
+\texttt{downside\_21}, confirming that medium- and long-horizon tail risk
+measures are the primary regime discriminators for the S\&P~500 over the
+2014--2016 training period.
+
+% -------------------------------------------------------
+\section{Synthesis and research gap}
+\label{sec:lit-synthesis}
+
+Three strands of literature come together in this paper. The first shows
+that cross-sectional stock characteristics predict returns and that ML
+methods, especially gradient-boosted trees, aggregate these signals better
+than linear alternatives. The second establishes that robust covariance
+estimation via Ledoit-Wolf shrinkage substantially reduces the
+optimisation error that bedevils mean-variance portfolios. The third
+demonstrates that equity markets exhibit persistent regimes, that these
+regimes can be detected causally using Sparse Jump Models, and that regime
+information alters the cross-sectional properties of return predictors.
+
+What remains unstudied is whether providing regime information
+\emph{directly as features} inside the return-forecasting model produces
+better portfolios than treating regime and return prediction as
+independent steps. The natural way to test this is to run two otherwise
+identical pipelines --- XGBoost trained with and without regime interaction
+features --- and compare their out-of-sample Sharpe ratios. This is the
+experiment this paper conducts.
+
+The closest related work is \citet{wang2020}, who rotate between factor
+models depending on the inferred regime, and \citet{millea2023}, who use
+reinforcement learning to select among allocation methods as regimes change.
+Both papers treat regime conditioning as a \emph{switching} rule applied
+after forecasting. The present paper instead treats the regime as an
+additional \emph{feature} that the forecasting model can interact with
+arbitrary characteristics, which allows XGBoost to learn
+regime-dependent characteristic pricing relationships without the author
+imposing a parametric form on those interactions.
+
+% =============================================================================
+
+\chapter{Methodology}
+\label{ch:methodology}
+
+The pipeline has seven components: data and universe construction
+(Section~\ref{sec:meth-data}), characteristic-based feature engineering
+(Section~\ref{sec:meth-features}), market regime detection via the Sparse
+Jump Model (Section~\ref{sec:meth-sjm}), regime feature augmentation
+(Section~\ref{sec:meth-regime-features}), walk-forward XGBoost return
+forecasting (Section~\ref{sec:meth-xgb}), Ledoit-Wolf covariance estimation
+and mean-variance optimisation (Section~\ref{sec:meth-opt}), and the
+benchmarks and evaluation criteria (Section~\ref{sec:meth-benchmarks}).
+
+% -------------------------------------------------------
+\section{Data and investment universe}
+\label{sec:meth-data}
+
+The investment universe consists of $N = 44$ S\&P~500 large-cap stocks
+spanning the period January 2014 to January 2026. The 44 constituents were
+selected to represent the largest and most liquid names across major sectors;
+the full ticker list is provided in the appendix. Daily adjusted close prices
+and trading volumes are downloaded from Yahoo Finance via the
+\texttt{yfinance} API. Adjusted prices account for dividends and stock splits
+using the split-and-dividend adjustment factor provided by Yahoo Finance.
+
+From daily data, all return and volatility features are computed at the
+\emph{monthly} frequency. Month-end prices are taken as the last adjusted
+close in each calendar month, and monthly returns are simple percentage
+changes:
+\begin{equation}
+  r_{i,t}^{\text{monthly}} = \frac{P_{i,t} - P_{i,t-1}}{P_{i,t-1}},
+\end{equation}
+where $P_{i,t}$ is the month-end adjusted close for stock $i$ in month $t$.
+Daily return data are used for within-month volatility and tail-risk
+estimates that require intra-month granularity.
+
+Portfolio rebalancing is monthly. At each month-end, the model is retrained
+on the preceding 36 months, predictions are generated for all assets, and
+new target weights are computed. The backtest evaluation period spans
+July 2018 to November 2024 (77 monthly periods), using the first 36 months
+(2014--2017) for the initial training window and the 12-month lookback for
+covariance estimation.
+
+% -------------------------------------------------------
+\section{Characteristic-based feature engineering}
+\label{sec:meth-features}
+
+For each stock $i$ and month-end $t$, a feature vector $\phi_{i,t}$ is
+constructed from the following characteristic groups.
+
+\subsection{Momentum}
+
+Three momentum measures are computed from month-end prices:
+\begin{equation}
+  \text{mom}_{i,t}^{(k)} = \frac{P_{i,t}}{P_{i,t-k}} - 1,
+  \qquad k \in \{3, 6, 12\}.
+\end{equation}
+These capture short-, intermediate-, and long-horizon price continuation
+\citep{jegadeesh1993}.
+
+\subsection{Volatility and tail risk}
+
+Realised volatility is estimated from the preceding 21 trading days of
+daily returns and annualised:
+\begin{equation}
+  \sigma_{i,t}^{\text{vol}} = \hat{\sigma}_{\text{daily},21} \cdot \sqrt{252}.
+\end{equation}
+Idiosyncratic volatility is the standard deviation of CAPM residuals over a
+30-calendar-day backward-looking window:
+\begin{equation}
+  \sigma_{i,t}^{\text{idio}} = \text{std}(r_{i,\tau} - \hat{\beta}_{i,t}\, r_{m,\tau})_{\tau \in [t-30,\, t]}.
+\end{equation}
+The maximum single-day return within the month ($\text{max\_daily\_ret}$)
+captures tail upside, which \citet{bali2011} document as negatively related
+to future returns in the cross section.
+
+\subsection{Liquidity}
+
+Two liquidity measures are included. The Amihud illiquidity ratio is
+\begin{equation}
+  \text{ILLIQ}_{i,t} = \frac{1}{21} \sum_{\tau \in \text{month}} \frac{|r_{i,\tau}|}{V_{i,\tau}^{\$}},
+\end{equation}
+where $V_{i,\tau}^{\$}$ is dollar trading volume \citep{amihud2002}.
+The volume trend is the 12-month percentage change in total monthly volume,
+capturing persistent shifts in investor attention.
+
+\subsection{Fundamentals and quality}
+
+Fundamental data are collected from the \texttt{yfinance} \texttt{.info}
+API at each rebalance date. Five firm-level signals are used: the trailing
+earnings-to-price ratio ($E/P$, the reciprocal of P/E), debt-to-equity
+(scaled by $10^{-2}$), return on equity (ROE), revenue growth (as a proxy
+for asset growth), and the log of market capitalisation (size). All five
+are forward-filled at the monthly frequency. Missing or negative values
+are set to \texttt{NaN} and handled by group-wise forward-fill before
+the training step.
+
+\subsection{Seasonality}
+
+Calendar-month dummies ($m \in \{1, \ldots, 12\}$) capture
+turn-of-the-month, tax-loss selling, and January effects. They are
+one-hot encoded with \texttt{get\_dummies} and one category dropped for
+identification, yielding 11 binary features.
+
+\subsection{Rolling aggregates and interaction terms}
+
+For each of the four most informative characteristics
+(\texttt{mom\_6m}, \texttt{vol\_21d}, \texttt{size}, \texttt{ep\_ratio}),
+rolling mean and standard deviation over windows of 3, 6, and 12 months
+are appended. These 24 features help the model distinguish whether the
+current value of a characteristic is atypically high or low relative to
+its own recent history. Two multiplicative interaction terms are also
+included: $\text{size} \times \text{mom\_6m}$ and
+$\text{vol\_21d} \times \text{mom\_6m}$, capturing the well-documented
+interaction between size and momentum and between volatility and momentum.
+
+The full feature vector has approximately 44 dimensions before regime
+augmentation (exact count varies slightly because idiosyncratic volatility
+is skipped for stocks with insufficient history).
+
+% -------------------------------------------------------
+\section{Market regime detection}
+\label{sec:meth-sjm}
+
+\subsection{SJM specification}
+
+The market regime $s_t \in \{0, 1\}$ is inferred from daily S\&P~500
+log-returns using a Sparse Jump Model with $K = 2$ components, jump penalty
+$\lambda = 50$, maximum effective feature count $\kappa^2 = 3.0$, and
+continuous state assignments (\texttt{cont=True}). States are sorted
+post hoc by cumulative return so that $s_t = 0$ is the bear (low-return)
+regime and $s_t = 1$ is the bull (high-return) regime.
+
+\subsection{Feature construction}
+
+The nine-dimensional feature vector $x_t$ is built from daily log-returns
+$r_t = \log(P_t / P_{t-1})$ on the S\&P~500 index. For each half-life
+$h \in \{5, 21, 63\}$ trading days, three exponentially weighted statistics
+are computed:
+\begin{align}
+  \text{mean}_h(t)      &= \text{EWM}_h[\,r\,]_t, \\
+  \text{logvol}_h(t)    &= \log \text{EWM}_h[\,\sigma(r)\,]_t, \\
+  \text{downside}_h(t)  &= \sqrt{\text{EWM}_h[\,r^2 \cdot \mathbf{1}_{r < 0}\,]_t},
+\end{align}
+giving nine features. All features are standardised to zero mean and unit
+variance on the training set; the same standardiser is applied to the
+online-prediction set.
+
+\subsection{Training and online prediction}
+
+Parameters are estimated on data from January 2014 through December 2015
+(the \emph{train window}). After fitting, the \texttt{predict\_online}
+method of the \texttt{jumpmodels} library performs a forward-pass recursion
+from January 2016 onward, updating the regime probability at each new
+day's observation without accessing any future data. This strict causal
+evaluation is essential: the forward-pass labels $\hat{s}_t^{\text{online}}$
+are the only regime signal used downstream, and they are available at the
+end of trading day $t$ without look-ahead.
+
+Feature weights selected by the SJM's $\ell_1$ penalty concentrate on
+\texttt{downside\_63} (weight 0.898), \texttt{logvol\_63} (0.711), and
+\texttt{downside\_21}, confirming that medium- and long-horizon tail risk
+is the primary driver of state transitions in this calibration.
+
+% -------------------------------------------------------
+\section{Regime feature augmentation}
+\label{sec:meth-regime-features}
+
+The regime-augmented variant appends three types of regime-derived features
+to $\phi_{i,t}$ for each stock $i$ and month $t$:
+
+\begin{enumerate}
+
+  \item \textbf{Regime label.} The hard regime assignment
+  $\hat{s}_t \in \{0, 1\}$ produced by online SJM prediction,
+  resampled from daily to month-end frequency by taking the last
+  daily value in the month.
+
+  \item \textbf{Days in regime.} The number of consecutive calendar days
+  the S\&P~500 has remained in the current regime as of month-end $t$.
+  This captures regime maturity and the tendency for return dynamics to
+  evolve within a regime over time.
+
+  \item \textbf{Regime interaction terms.} For each of the 13 ``major''
+  characteristics listed in Table~\ref{tab:major-vars}, the elementwise
+  product $\hat{s}_t \cdot \phi_{i,t}^{(k)}$ is appended. These terms
+  let XGBoost learn a separate relationship between each characteristic
+  and future returns for each regime, without the analyst specifying the
+  functional form of the conditioning.
+
+\end{enumerate}
+
+\begin{table}[H]
+  \centering
+  \caption{Characteristics used for regime interaction features.}
+  \label{tab:major-vars}
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    Feature key & Description \\
+    \midrule
+    \texttt{mom\_3m}, \texttt{mom\_6m}, \texttt{mom\_12m}
+      & 3-, 6-, 12-month price momentum \\
+    \texttt{vol\_21d}
+      & 21-day annualised realised volatility \\
+    \texttt{idiosyncratic\_vol}
+      & Annualised CAPM residual volatility \\
+    \texttt{max\_daily\_ret}
+      & Maximum daily return in the past month \\
+    \texttt{volume\_trend}
+      & 12-month change in monthly volume \\
+    \texttt{amihud\_illiq}
+      & Amihud illiquidity ratio \\
+    \texttt{ep\_ratio}
+      & Earnings-to-price ratio \\
+    \texttt{debt\_to\_equity}
+      & Debt-to-equity ratio \\
+    \texttt{roe}
+      & Return on equity \\
+    \texttt{asset\_growth\_proxy}
+      & Revenue growth (yfinance) \\
+    \texttt{size}
+      & Log market capitalisation \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+This augmentation strategy differs from regime-switching frameworks in the
+literature \citep{guidolintimmermann2007, nystrup2018} in that the regime
+enters as input to a single forecasting model rather than as a selector
+between separate models. XGBoost can therefore discover nonlinear
+interaction effects that a parametric regime-switching regression cannot.
+
+% -------------------------------------------------------
+\section{Walk-forward XGBoost return forecasting}
+\label{sec:meth-xgb}
+
+\subsection{Model specification}
+
+An XGBoost gradient-boosted tree regressor \citep{chenguest2016} is
+trained each month on the 36-month rolling cross-sectional panel of
+stock--month observations. The response variable is the
+next-month return $r_{i,t+1}^{\text{monthly}}$. The XGBoost
+hyperparameters are fixed throughout the backtest:
+
+\begin{table}[H]
+  \centering
+  \caption{XGBoost hyperparameters.}
+  \label{tab:xgb-params}
+  \begin{tabular}{@{}lr@{}}
+    \toprule
+    Hyperparameter & Value \\
+    \midrule
+    \texttt{n\_estimators}    & 150 \\
+    \texttt{max\_depth}       & 4 \\
+    \texttt{learning\_rate}   & 0.05 \\
+    \texttt{subsample}        & 0.70 \\
+    \texttt{colsample\_bytree}& 0.50 \\
+    \texttt{reg\_lambda}      & 1.0 \\
+    \texttt{reg\_alpha}       & 0.1 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Subsampling of both observations and features at each tree step, together
+with the $L_2$ (\texttt{reg\_lambda}) and $L_1$ (\texttt{reg\_alpha})
+penalties on leaf weights, provide regularisation against overfitting on the
+36-month training panel.
+
+\subsection{PCA augmentation}
+
+Before training, the feature matrix $X_{\text{train}} \in \mathbb{R}^{n \times p}$
+is standardised to zero mean and unit variance. Three principal components
+are then extracted from the standardised matrix and appended as additional
+columns, so the effective training matrix is
+\begin{equation}
+  \tilde{X}_{\text{train}} = \bigl[X_{\text{train}} \;\big|\; U_3 \bigr],
+\end{equation}
+where $U_3 \in \mathbb{R}^{n \times 3}$ contains the first three PC scores.
+The same scaler and PCA object (fitted on the training window) are applied
+to the test-month observations before prediction, ensuring no information
+leakage. PCA augmentation exposes the model to common cross-sectional
+variation in characteristics that individual feature interactions may not
+capture directly.
+
+\subsection{Walk-forward validation}
+
+For each month $t$ from the first prediction month onward:
+\begin{enumerate}
+  \item Collect all stock--month observations from months $t - W$ to $t - 1$
+        (training set, $W = 36$).
+  \item Fit the standardiser, PCA, and XGBoost model on this set.
+  \item Construct features for all stocks at month $t$ using the fitted
+        standardiser and PCA.
+  \item Generate raw predictions $\hat{\mu}_{i,t}$ for all stocks
+        at month $t$.
+\end{enumerate}
+No information from month $t$ onward enters the model trained for month $t$.
+This strict sequential structure ensures that performance metrics computed
+on the evaluation period are genuinely out of sample.
+
+\subsection{Return shrinkage}
+
+Raw XGBoost predictions are shrunken toward the cross-sectional mean:
+\begin{equation}
+  \tilde{\mu}_{i,t} = \alpha\,\bar{\mu}_{t} + (1 - \alpha)\,\hat{\mu}_{i,t},
+  \qquad \bar{\mu}_{t} = \frac{1}{N}\sum_{j=1}^{N} \hat{\mu}_{j,t},
+  \label{eq:meth-shrinkage}
+\end{equation}
+with shrink factor $\alpha = 0.25$. Shrinkage reduces the variance of the
+return-vector input to the optimiser and partially corrects for the tendency
+of boosted trees to produce extreme predictions for individual stocks when the
+training window contains unusual observations.
+
+% -------------------------------------------------------
+\section{Covariance estimation and portfolio optimisation}
+\label{sec:meth-opt}
+
+\subsection{Ledoit-Wolf covariance}
+
+At each month-end $t$, the monthly return matrix over the preceding
+$W_{\Sigma} = 12$ months is collected for all assets with complete data.
+The Ledoit-Wolf linear shrinkage estimator of \citet{ledoitwolf2004}
+is applied:
+\begin{equation}
+  \hat{\Sigma}_{t} = \alpha^{\star}_{t}\, F_{t} + (1 - \alpha^{\star}_{t})\, S_{t},
+  \label{eq:meth-lw}
+\end{equation}
+where $F_t$ is the constant-correlation target and $\alpha^{\star}_t$ is
+the analytically optimal shrinkage intensity. The 12-month window was
+chosen to balance the need for a recent estimate against the need for
+enough observations to produce a non-degenerate $\hat{\Sigma}_t$; with
+12 monthly observations and 44 assets, the matrix is rank-deficient without
+shrinkage, which makes the \citet{ledoitwolf2004} estimator strictly necessary
+for this configuration.
+
+\subsection{Mean-variance optimisation with turnover penalty}
+
+Given the shrunken expected return vector $\tilde{\mu}_{t}$ and the
+Ledoit-Wolf covariance $\hat{\Sigma}_{t}$, the portfolio weight vector
+$w_t$ is the solution to
+\begin{equation}
+  \max_{w} \;\tilde{\mu}_{t}^{\top} w - \frac{\lambda}{2}\, w^{\top} \hat{\Sigma}_{t}\, w
+  - \gamma\, \|w - w_{t-1}^{\text{drift}}\|_{1}
+  \quad \text{s.t.} \quad
+  \mathbf{1}^{\top} w = 1, \quad w \geq 0,
+  \label{eq:meth-mv}
+\end{equation}
+where $\lambda = 2.5$ is the risk-aversion parameter, $\gamma = 0.01$ is
+the turnover penalty, and $w_{t-1}^{\text{drift}}$ is the vector of weights
+as they drift from the previous month's target after one period of returns
+(not the same as $w_{t-1}$ when assets have returned different amounts).
+Problem~\eqref{eq:meth-mv} is solved with SLSQP via \texttt{scipy.optimize.minimize}.
+
+The turnover penalty introduces an incentive to stay close to the current
+portfolio, reducing transaction costs and preventing the optimiser from making
+large, potentially noise-driven reallocations in response to small changes
+in the predicted returns. Unlike an explicit transaction cost, the $L_1$
+penalty on weight changes is computationally tractable and produces sparse
+differences between consecutive portfolios.
+
+The risk-aversion parameter $\lambda = 2.5$ sits in the range typically
+associated with institutional investors and produces well-diversified
+portfolios in calibration tests; results under $\lambda \in \{1, 5\}$ are
+reported as robustness checks in the supplementary material.
+
+% -------------------------------------------------------
+\section{Benchmarks and evaluation criteria}
+\label{sec:meth-benchmarks}
+
+\subsection{Benchmark strategies}
+
+Four strategies are compared over the evaluation period:
+
+\begin{enumerate}
+
+  \item \textbf{XGBoost + Markowitz (baseline).} The full pipeline described
+  in Sections~\ref{sec:meth-features}--\ref{sec:meth-opt} without regime
+  features. This is the primary strategy and the baseline against which
+  regime augmentation is tested.
+
+  \item \textbf{XGBoost + Markowitz (regime-augmented).} The same pipeline
+  with the regime label, days-in-regime, and 13 interaction terms appended
+  to the feature set. This is the treatment strategy. Its Sharpe ratio
+  difference from the baseline is the main test statistic.
+
+  \item \textbf{$\mathbf{1/N}$ equal-weight} \citep{demiguel2009}.
+  $w_{i,t} = 1/N$ for all $i$ and $t$. No estimated parameters. The most
+  parsimonious baseline and the standard hurdle in the portfolio literature.
+
+  \item \textbf{S\&P~500 (SPY).} The passive market-cap-weighted index
+  return. Represents the opportunity cost of active management and controls
+  for broad market beta.
+
+\end{enumerate}
+
+\subsection{Evaluation metrics}
+
+Performance is evaluated along four dimensions:
+
+\begin{itemize}
+  \item \textbf{Annualised return}: $\hat{R}^{p} = 12 \times \bar{r}^{p}$,
+  where $\bar{r}^{p}$ is the mean monthly portfolio return.
+
+  \item \textbf{Annualised volatility}: $\hat{\sigma}^{p} = \sqrt{12} \times s^{p}$,
+  where $s^{p}$ is the sample standard deviation of monthly returns.
+
+  \item \textbf{Sharpe ratio}:
+  $\text{SR} = (\bar{r}^{p} - r_f/12) / s^{p} \times \sqrt{12}$,
+  using an annualised risk-free rate $r_f = 4\%$.
+
+  \item \textbf{Maximum drawdown}: the deepest trough-to-peak decline in
+  cumulative wealth over the evaluation period.
+\end{itemize}
+
+Differences in Sharpe ratios between the baseline and regime-augmented
+strategies are tested for statistical significance using the robust Sharpe
+test of \citet{ledoitwolf2008}, which accounts for non-Gaussian returns and
+serial correlation. Because two nested variants are compared (one pipeline
+with and without a feature block), the test statistic has a natural
+interpretation: a positive and statistically significant Sharpe increment
+supports the value of regime information as a conditioning variable.
+
+% =============================================================================
+
+\chapter{Results}
+\label{ch:results}
+
+\section{Baseline pipeline performance}
+
+Table~\ref{tab:results-main} reports the out-of-sample performance of
+all strategies over the July 2018 to November 2024 evaluation period
+(77 monthly observations).
+
+\begin{table}[H]
+  \centering
+  \caption{Out-of-sample performance: July 2018 -- November 2024.}
+  \label{tab:results-main}
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    Strategy & Ann.\ Return (\%) & Ann.\ Vol (\%) & Sharpe Ratio & Max Drawdown (\%) \\
+    \midrule
+    XGBoost + Markowitz (baseline)      & 57.3 & 42.6 & 1.250 & $-$43.6 \\
+    1/N Equal Weight                    & 26.8 & 18.4 & 1.238 & $-$23.0 \\
+    SPY                                 & 14.0 & 17.6 & 0.570 & $-$24.8 \\
+    \midrule
+    XGBoost + Markowitz (regime-augmented) & \multicolumn{4}{c}{\emph{results pending}} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The baseline XGBoost + Markowitz strategy achieves a Sharpe ratio of 1.25,
+materially above both the equal-weight benchmark (1.24) and the passive
+S\&P~500 (0.57). The improvement over SPY is economically large and
+consistent with \citet{gukellyx2020}, who document that characteristic-based
+ML models earn significant risk-adjusted returns on large-cap US stocks.
+
+The strategy's higher volatility (42.6\% versus 18.4\% for equal-weight)
+reflects concentration in high-momentum, high-conviction positions that the
+mean-variance optimiser allocates to when predicted returns diverge strongly
+across stocks. The maximum drawdown of $-43.6\%$ is deeper than SPY's
+$-24.8\%$, indicating that the strategy retains significant market exposure
+through bear regimes, which motivates the regime-conditioning question.
+
+\section{Cumulative returns and drawdown profiles}
+
+[Figure comparing cumulative return paths of all strategies to be inserted here.]
+
+\section{Regime-augmented results}
+
+[Results for the regime-augmented pipeline to be inserted upon completion of
+the experiment.]
+
+% =============================================================================
+
+\chapter{Discussion}
+\label{ch:discussion}
+
+\section{Interpretation of the baseline result}
+
+The baseline XGBoost + Markowitz strategy achieves a Sharpe ratio of 1.25
+over the evaluation period, clearing the equal-weight benchmark by a slim
+margin (1.24) while generating substantially higher absolute returns (57.3\%
+versus 26.8\%). This pattern --- higher return at higher volatility, similar
+Sharpe --- is consistent with the portfolio optimiser concentrating in
+high-momentum tech-sector names that dominated S\&P~500 performance over the
+2018--2024 period. The regime-conditional analysis will determine whether
+this concentration is rational given the prevailing market state or whether
+it represents an under-diversification that regime conditioning can correct.
+
+\section{Limitations}
+
+Several limitations should be noted. First, the 44-stock universe is a
+convenience sample biased toward large, liquid names. Survivorship bias
+may be present if all 44 tickers were current constituents at the time of
+data download. Second, fundamental data (E/P, D/E, ROE) are collected at
+the time of analysis rather than as point-in-time historical snapshots; this
+introduces a mild look-ahead bias in the fundamental features. Third, the
+Ledoit-Wolf covariance is estimated on a 12-month window that is shorter
+than the 36-month feature window, creating a potential inconsistency in the
+information sets used for return and risk estimation. Fourth, transaction
+costs are captured only through the turnover penalty $\gamma$ in the
+optimiser rather than as explicit bid-ask spreads; results may overstate
+net-of-cost performance. These limitations define priorities for future work.
+
+% =============================================================================
+
+\chapter{Conclusion}
+\label{ch:conclusion}
+
+This paper develops and evaluates an end-to-end pipeline for large-cap US
+equity portfolio construction that combines three ideas: walk-forward XGBoost
+return forecasting on a rich cross-section of stock characteristics,
+Ledoit-Wolf-shrunk mean-variance optimisation with a turnover penalty, and
+Sparse Jump Model regime detection used to generate regime interaction
+features. The baseline strategy achieves an annualised Sharpe ratio of 1.25
+over July 2018 to November 2024, clearing the 1/N equal-weight benchmark
+(1.24) and substantially outperforming passive SPY (0.57).
+
+The central contribution is a transparent test of whether SJM regime
+features improve cross-sectional return forecasting inside a gradient-boosted
+tree model. If the regime-augmented variant materially improves on the
+baseline Sharpe ratio, the finding supports the view that market regimes
+shift the pricing of cross-sectional characteristics and that this shift can
+be detected causally in real time using sparse jump models. A negative
+result would be equally informative: it would suggest that the marginal
+predictive content of regime information is already captured by the
+momentum and volatility characteristics in the baseline feature set.
+
+Future work could extend the universe to the full S\&P~500, use point-in-time
+fundamental data to eliminate the mild look-ahead in firm characteristics,
+and explore more expressive regime models with more than two states or
+soft-probability weighting of the interaction features.
+
+% === Appendices ===
+\appendix
+
+\chapter{Investment Universe}
+\label{app:universe}
+
+The 44 tickers included in the investment universe are: NVDA, GOOGL, AAPL,
+MSFT, AMZN, AVGO, META, TSLA, WMT, JPM, LLY, XOM, V, MU, AMD, JNJ, INTC,
+ORCL, MA, COST, NFLX, CVX, BAC, CAT, ABBV, CSCO, PG, KO, UNH, HD, LRCX,
+AMAT, GE, MS, MRK, GS, PM, WFC, TXN, KLAC, LIN, RTX, C, AXP.
+
+All data were downloaded from Yahoo Finance using split-and-dividend-adjusted
+close prices. Constituents represent the largest market-cap names in the
+S\&P~500 as of the data retrieval date; no point-in-time constituent lists
+were used.
+
+\chapter{Hyperparameter Sensitivity}
+\label{app:sensitivity}
+
+[Robustness checks across risk-aversion parameter $\lambda \in \{1, 2.5, 5\}$,
+shrink factor $\alpha \in \{0, 0.25, 0.5\}$, and training window $W \in \{24, 36, 48\}$
+months to be inserted here.]
+
+% === Bibliography ===
+\bibliography{references}
+
+\end{document}

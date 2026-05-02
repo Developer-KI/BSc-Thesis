@@ -1,38 +1,92 @@
-# BSc_Thesis
+# BSc Thesis — Regime-Aware Portfolio Optimisation
 
-Topic: Optimal portfolio strategies for a large universe of assets
-Idea: Robustness of methods in regimes and model averaging/regime switch for better performance
+**Topic:** Optimal portfolio strategies over a large equity universe with market-regime conditioning
+
+**Core idea:** Can a machine-learning return-forecasting model paired with mean-variance optimisation outperform simple benchmarks, and does augmenting the model with market-regime information produce a further, consistent improvement?
+
+---
 
 ## Data
 
-Daily close/return data over 5 years
+| Source | Description |
+|---|---|
+| Yahoo Finance | Adjusted daily OHLCV for 44 large-cap S&P 500 constituents, 2014–2026 |
+| S&P 500 index (^GSPC) | Used as the benchmark and as the input series for regime detection |
 
-Sectors: Bloomberg data from 100+ macro indecies
-Assets: Yahoo Finance data for almost all (492/503) current 500 SPY constituients
+Rebalancing is **monthly**; a 36-month rolling window is used for model training.
+
+---
 
 ## Methodology
 
-### Methodology HSP:
+### 1. Market-Regime Detection (Sparse Jump Model)
 
-Common drivers are selected as the top \( K \) (hyperparameter 1) with the highest common correlation with respect to all portfolio constituents, using correlation time series of daily returns and a time window \( W*{CD} \) (hyperparameter 2). With this common driver selection as inputs and one portfolio constituent as output, we train several feed‑forward networks for the prediction task. We use a time window \( W*{NN} \) (hyperparameter 3) for many architectures (varying numbers of layers and neurons) and select the most accurate one using Baysean Serch with a fixed number of maximum trials \( T \) (hyperparameter 4). We repeat this process for the rest of the portfolio constituents using the same common drivers.
+A **Sparse Jump Model** (Nystrup et al., 2021) is fitted on EWM features of S&P 500 log-returns — drift, log-volatility, and downside semi-deviation — across three half-lives (5, 21, 63 days). The model identifies two hidden states:
 
-Once the dynamics are approximated, for each previous optimal architecture (for one portfolio constituent), we compute the sensitivities of each constituent with respect to the common drivers using Automatic Adjoint Differentiation (AAD) on the feed‑forward networks, applied to the training set. Each sensitivity is a function of the training set, and we average it. Each constituent is assigned a vector of average sensitivity values with respect to the same common drivers, which is used for embedding. A distance matrix is computed for all constituents using these average sensitivity values as coordinates.
+- **State 0 — Bear:** high volatility, negative drift, large downside
+- **State 1 — Bull:** low volatility, positive drift
 
-This matrix is used for portfolio optimization, first by finding the nearest positive semi‑definite neighbor matrix with numerical methods, then applying hierarchical clustering to that neighbor matrix, where hierarchies based on sensitivities are recorded. Finally, the positive semi‑definite neighbor of the sensitivity matrix is sorted according to these hierarchies, and weights are computed based on the hierarchical partitions and clusters' covariance matrices.
+Training uses data through end-2015; online (look-ahead-free) predictions are generated from 2016 onward. The dominant features selected by the sparse penalty are `downside_63` (weight 0.898), `logvol_63` (0.711), and `downside_21`.
 
-### Methodology HRP:
+### 2. Feature Engineering
 
-Here we use the covariance matrix for portfolio optimization, first by finding the nearest positive semi‑definite neighbor matrix with numerical methods if needed, then applying hierarchical clustering to that neighbor matrix, where hierarchies based on risk are recorded. Finally, the positive semi‑definite neighbor of the covariance matrix is sorted according to these hierarchies, and weights are computed based on the hierarchical partitions and clusters' covariance matrices.
+For each asset and each month-end the following characteristics are computed:
 
-### Methodology Markowitz
+- **Momentum:** 3-, 6-, and 12-month price momentum
+- **Volatility:** 21-day realised volatility (annualised); idiosyncratic volatility (CAPM residual)
+- **Liquidity:** Amihud illiquidity ratio; volume trend (12-month change)
+- **Tail risk:** Maximum single-day return over the prior month
+- **Fundamentals:** E/P ratio, debt-to-equity, ROE, revenue growth (from yfinance), log market cap
+- **Seasonality:** Month-of-year dummies
+- **Rolling aggregates:** 3-, 6-, 12-month rolling mean and standard deviation of key series
+- **Interaction terms:** size × momentum, volatility × momentum
+- **Regime features** *(regime-augmented variant only)*: current regime label (0/1), days continuously in the current regime, and regime × each major characteristic interaction
 
-Here we use the historical data and the pyportfolioopt package to estimate a robust solution (using the Leodot Wolf cov methods and/or Black Litterman returns) and a base markowitz optimization
+### 3. Return Forecasting (XGBoost, Walk-Forward)
 
-### Methodology Benchmark
+An **XGBoost regressor** is trained each month on the rolling 36-month window to predict next-month stock returns. Input features are augmented with the top 3 PCA factors (fit on the training window only) before model training to capture latent cross-sectional structure. Forecasts are then **shrunk toward the cross-sectional mean** (shrink factor 0.25) to reduce overfitting.
 
-I will also include a simple evenly split portfolio a market cap portfolio (SPY) to benchmark against all candidates for comparison
+### 4. Portfolio Construction (Mean-Variance + Ledoit-Wolf)
 
-## Estimation Times
+Expected returns from XGBoost are combined with a **Ledoit-Wolf shrunk covariance** (12-month lookback) in a long-only mean-variance optimisation:
 
-One iteration is one rebalance of the portfolio (mounthly):
-Expected time for full backtest of X years = Time per rebalance (25s for 15 test assets/Xs for full 493 assets) x [X Years / 12 rebalances]
+$$\max_w \; \mu^\top w - \tfrac{\lambda}{2}\, w^\top \Sigma w - \gamma \,\|w - w_{t-1}\|_1$$
+
+Parameters: risk aversion λ = 2.5, turnover penalty γ = 0.01. The problem is solved with SLSQP.
+
+### 5. Benchmarks
+
+| Strategy | Description |
+|---|---|
+| **XGBoost + Markowitz** | Full ML + MV pipeline (baseline, no regime features) |
+| **1/n Equal Weight** | Naive equal allocation, monthly rebalanced |
+| **SPY** | S&P 500 index (passive, market-cap weighted) |
+
+---
+
+## Results (Backtest period: Jul 2018 – Nov 2024, 77 months)
+
+| Strategy | Ann. Return | Ann. Vol | Sharpe Ratio | Max Drawdown |
+|---|---|---|---|---|
+| **XGBoost + Markowitz** | **57.3%** | 42.6% | **1.250** | -43.6% |
+| 1/n Equal Weight | 26.8% | 18.4% | 1.238 | -23.0% |
+| SPY | 14.0% | 17.6% | 0.570 | -24.8% |
+
+Key observations:
+
+- The ML model achieves a materially higher Sharpe ratio (1.25) than the passive SPY (0.57), demonstrating the value of cross-sectional return prediction in portfolio construction.
+- Equal-weight achieves a comparable Sharpe (1.24) at roughly half the volatility, suggesting the ML model's excess return comes with concentrated risk.
+- The regime-augmented variant (with regime labels and interaction features fed as XGBoost inputs) is currently under evaluation to assess whether systematic regime conditioning further improves risk-adjusted performance.
+
+---
+
+## Project Structure
+
+```
+analysis/
+  research.ipynb   — main backtest and regime-detection notebook
+utils/
+  plotting.py      — shared visualisation helpers
+  data_mining.py   — data utilities
+Bsc_Thesis.pdf     — thesis document (in progress)
+```

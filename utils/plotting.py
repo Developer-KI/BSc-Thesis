@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 from matplotlib.colors import TwoSlopeNorm
 from scipy.cluster.hierarchy import dendrogram
+from scipy import stats as sp_stats
 from typing import List, Optional
 
 # ── Global style ──────────────────────────────────────────────────────────────
@@ -408,5 +409,302 @@ def plot_weights_area(
     ax.set_ylim(0, 1)
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
     ax.legend(loc="upper left", bbox_to_anchor=(1, 1), fontsize=8, ncol=1)
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# ── 12. Monthly Returns Calendar Heatmap ─────────────────────────────────────
+def plot_monthly_returns_heatmap(
+    returns_series: pd.Series,
+    title: str = "Monthly Returns Heatmap",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Calendar heatmap: rows = years, columns = months, cell colour = return.
+    Annual return is annotated to the right of each row.
+    """
+    r = returns_series.copy()
+    r.index = pd.to_datetime(r.index)
+    df = r.to_frame("ret")
+    df["year"]  = df.index.year
+    df["month"] = df.index.month
+    pivot = df.pivot_table(values="ret", index="year", columns="month")
+    pivot.columns = [pd.Timestamp(2000, int(m), 1).strftime("%b") for m in pivot.columns]
+
+    ann_ret = (1 + r).resample("YE").prod() - 1
+    ann_ret.index = ann_ret.index.year
+
+    flat = pivot.values[~np.isnan(pivot.values)]
+    abs_max = max(abs(flat).max(), 0.001)
+    norm = TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max)
+
+    fig, ax = plt.subplots(figsize=(14, max(4, len(pivot) * 0.5 + 1)))
+    im = ax.imshow(pivot.values, cmap="RdYlGn", norm=norm, aspect="auto")
+    fig.colorbar(im, ax=ax, fraction=0.015, pad=0.02,
+                 format=mtick.PercentFormatter(xmax=1, decimals=1))
+
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels(pivot.columns, fontsize=9)
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels(pivot.index, fontsize=9)
+
+    for i in range(len(pivot.index)):
+        for j in range(len(pivot.columns)):
+            val = pivot.iloc[i, j]
+            if not np.isnan(val):
+                ax.text(j, i, f"{val*100:.1f}%", ha="center", va="center",
+                        fontsize=7, color="black" if abs(val) < 0.12 else "white")
+        yr = pivot.index[i]
+        if yr in ann_ret.index:
+            ax.text(len(pivot.columns) + 0.15, i,
+                    f"  {ann_ret[yr]*100:.1f}%",
+                    ha="left", va="center", fontsize=8,
+                    color="#4CAF50" if ann_ret[yr] >= 0 else "#F44336",
+                    fontweight="bold")
+
+    ax.set_xlim(-0.5, len(pivot.columns) - 0.5 + 1.2)
+    ax.set_title(title)
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# ── 13. Return Distribution ───────────────────────────────────────────────────
+def plot_return_distribution(
+    returns_df: pd.DataFrame,
+    title: str = "Return Distribution",
+    bins: int = 35,
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Histogram + KDE + normal overlay for each strategy with key stats annotated.
+    """
+    n = len(returns_df.columns)
+    cols = min(n, 3)
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4.5 * rows), squeeze=False)
+    axes_flat = axes.flatten()
+
+    for i, col in enumerate(returns_df.columns):
+        ax = axes_flat[i]
+        r = returns_df[col].dropna()
+        color = _PALETTE[i % len(_PALETTE)]
+
+        ax.hist(r, bins=bins, density=True, color=color, alpha=0.35, edgecolor="white")
+        x_range = np.linspace(r.min() * 1.3, r.max() * 1.3, 300)
+        kde = sp_stats.gaussian_kde(r)
+        ax.plot(x_range, kde(x_range), color=color, linewidth=2, label="KDE")
+
+        mu_n, sig_n = r.mean(), r.std()
+        ax.plot(x_range, sp_stats.norm.pdf(x_range, mu_n, sig_n),
+                color="black", linewidth=1.2, linestyle="--", alpha=0.65, label="Normal")
+
+        ax.axvline(0, color="black", linewidth=0.7, linestyle=":")
+        ax.axvline(mu_n, color=color, linewidth=1.2, linestyle="--", alpha=0.9)
+
+        skew_val = sp_stats.skew(r)
+        kurt_val = sp_stats.kurtosis(r)
+        var95    = np.percentile(r, 5)
+        ax.text(0.03, 0.97,
+                f"Mean: {mu_n*100:.2f}%\nStd:  {sig_n*100:.2f}%\n"
+                f"Skew: {skew_val:.2f}\nKurt: {kurt_val:.2f}\n"
+                f"VaR95: {var95*100:.2f}%",
+                transform=ax.transAxes, va="top", fontsize=7.5,
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.75))
+
+        ax.set_title(col, fontsize=10)
+        ax.set_xlabel("Monthly Return")
+        ax.xaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
+        ax.legend(fontsize=7)
+
+    for ax in axes_flat[n:]:
+        ax.set_visible(False)
+
+    fig.suptitle(title, fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# ── 14. Annual Returns ────────────────────────────────────────────────────────
+def plot_annual_returns(
+    returns_df: pd.DataFrame,
+    title: str = "Annual Returns by Strategy",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Grouped bar chart of calendar-year returns for each strategy.
+    """
+    annual = (1 + returns_df).resample("YE").prod() - 1
+    annual.index = annual.index.year
+
+    n_strats = len(annual.columns)
+    bar_width = 0.8 / n_strats
+    x = np.arange(len(annual.index))
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+    for i, col in enumerate(annual.columns):
+        offsets = x + i * bar_width - 0.4 + bar_width / 2
+        vals = annual[col].values
+        colors = [_PALETTE[i % len(_PALETTE)] if v >= 0 else _PALETTE[1] for v in vals]
+        ax.bar(offsets, vals, width=bar_width * 0.92,
+               color=colors, label=col, alpha=0.85, edgecolor="white")
+
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels(annual.index, rotation=45, ha="right")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# ── 15. Risk-Return Scatter ───────────────────────────────────────────────────
+def plot_risk_return_scatter(
+    returns_df: pd.DataFrame,
+    risk_free_rate: float = 0.04,
+    title: str = "Risk-Return Profile",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Annualised return vs annualised volatility with iso-Sharpe reference lines.
+    """
+    ann_ret = returns_df.mean() * 12
+    ann_vol = returns_df.std() * np.sqrt(12)
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+
+    vol_range = np.linspace(0, ann_vol.max() * 1.35, 300)
+    for sr in [0, 0.5, 1.0, 1.5, 2.0]:
+        ret_line = risk_free_rate + sr * vol_range
+        ax.plot(vol_range, ret_line, color="grey", linewidth=0.7,
+                linestyle="--", alpha=0.45)
+        mid = len(vol_range) // 2
+        ax.text(vol_range[mid], ret_line[mid] + 0.004,
+                f"SR={sr}", fontsize=7, color="grey", va="bottom")
+
+    for i, col in enumerate(returns_df.columns):
+        color = _PALETTE[i % len(_PALETTE)]
+        ax.scatter(ann_vol[col], ann_ret[col], s=140, color=color,
+                   zorder=5, edgecolors="white", linewidths=1.3)
+        ax.annotate(col, (ann_vol[col], ann_ret[col]),
+                    textcoords="offset points", xytext=(9, 4),
+                    fontsize=9, color=color, fontweight="bold")
+
+    ax.set_xlabel("Annualised Volatility")
+    ax.set_ylabel("Annualised Return")
+    ax.xaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
+    ax.axhline(risk_free_rate, color="black", linewidth=0.8, linestyle=":",
+               label=f"Risk-Free ({risk_free_rate:.0%})")
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# ── 16. Rolling Beta ──────────────────────────────────────────────────────────
+def plot_rolling_beta(
+    returns_df: pd.DataFrame,
+    benchmark_col: str,
+    window: int = 12,
+    title: str = "Rolling Beta vs Benchmark",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Rolling beta of each strategy vs benchmark_col over a rolling window.
+    """
+    bench = returns_df[benchmark_col]
+    strategies = [c for c in returns_df.columns if c != benchmark_col]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    for i, col in enumerate(strategies):
+        strat = returns_df[col]
+        rolling_cov  = strat.rolling(window).cov(bench)
+        rolling_var  = bench.rolling(window).var()
+        rolling_beta = rolling_cov / rolling_var
+        ax.plot(rolling_beta.index, rolling_beta,
+                label=col, color=_PALETTE[i % len(_PALETTE)], linewidth=1.3)
+
+    ax.axhline(1, color="black", linewidth=0.8, linestyle="--", alpha=0.5, label="β=1")
+    ax.axhline(0, color="black", linewidth=0.6, linestyle=":")
+    ax.set_title(f"{title}  (window={window} mo)")
+    ax.set_ylabel("Beta")
+    ax.legend(fontsize=9)
+    fig.tight_layout()
+    return _save(fig, save_path)
+
+
+# ── 17. Comprehensive Metrics Table ──────────────────────────────────────────
+def plot_metrics_table(
+    metrics_df: pd.DataFrame,
+    title: str = "Comprehensive Performance Metrics",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Renders a metrics DataFrame (strategies as rows, metrics as columns) as a
+    colour-coded table.  Green = best in column, red = worst.
+    """
+    higher_is_better = {
+        "Ann. Return (%)": True,  "Cumul. Return (%)": True,
+        "Sharpe Ratio": True,     "Sortino Ratio": True,
+        "Calmar Ratio": True,     "Omega Ratio": True,
+        "Tail Ratio": True,       "Hit Rate (%)": True,
+        "Best Month (%)": True,   "Avg Gain (%)": True,
+        "Win/Loss Ratio": True,   "Alpha (ann. %)": True,
+        "Information Ratio": True,"Treynor Ratio": True,
+        "Ann. Volatility (%)": False, "Max Drawdown (%)": False,
+        "Avg DD Duration (mo)": False,"Max DD Duration (mo)": False,
+        "VaR 95% (%)": False,     "CVaR 95% (%)": False,
+        "Tracking Error (%)": False,  "Worst Month (%)": False,
+        "Avg Loss (%)": False,
+    }
+
+    df = metrics_df.T
+    n_rows, n_cols = df.shape
+    fig_h = max(5, n_rows * 0.40 + 1)
+    fig_w = max(10, n_cols * 2.8 + 2)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.axis("off")
+
+    col_labels = list(df.columns)
+    row_labels  = list(df.index)
+    cell_text   = [
+        [f"{v:.3f}" if pd.notna(v) else "—" for v in df.loc[row]]
+        for row in row_labels
+    ]
+
+    table = ax.table(
+        cellText=cell_text,
+        rowLabels=row_labels,
+        colLabels=col_labels,
+        loc="center",
+        cellLoc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1, 1.45)
+
+    for ri, metric in enumerate(row_labels):
+        vals = [df.loc[metric, c] for c in col_labels]
+        numeric = [v for v in vals if pd.notna(v)]
+        if not numeric:
+            continue
+        good = higher_is_better.get(metric, True)
+        best_val  = max(numeric) if good else min(numeric)
+        worst_val = min(numeric) if good else max(numeric)
+        for ci, v in enumerate(vals):
+            if pd.isna(v):
+                continue
+            cell = table[ri + 1, ci]
+            if v == best_val:
+                cell.set_facecolor("#C8E6C9")
+            elif v == worst_val:
+                cell.set_facecolor("#FFCDD2")
+
+    for ci in range(len(col_labels)):
+        table[0, ci].set_facecolor("#37474F")
+        table[0, ci].set_text_props(color="white", fontweight="bold")
+
+    ax.set_title(title, fontsize=12, fontweight="bold", pad=12)
     fig.tight_layout()
     return _save(fig, save_path)
