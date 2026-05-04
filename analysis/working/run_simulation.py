@@ -48,9 +48,9 @@ def main() -> None:
     print("=" * 72)
 
     df = L.run_simulation_study(
-        T=126, N=100, K_true=3,
+        T=504, N=100, K_true=3,
         structures=("sharp", "medium", "diffuse"),
-        n_reps=300, seed0=0,
+        n_reps=30, seed0=0,
     )
     df.to_csv(f"{outdir}/sim_results.csv", index=False)
 
