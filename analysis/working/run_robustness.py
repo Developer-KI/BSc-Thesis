@@ -65,12 +65,12 @@ PERMNO_COL = "PERMNO"
 RET_COL = None
 
 # Sample period
-START_DATE = "2019-01-01"
+START_DATE = "2000-01-01"
 END_DATE = "2024-12-31"
 
 # Default grid (kept modest for runtime)
 DEFAULT_LOOKBACKS = "126, 252, 504, 756"
-DEFAULT_REBALANCES = "21"
+DEFAULT_REBALANCES = "5, 21, 63"
 DEFAULT_LINKAGES = "single,average,ward"
 DEFAULT_COST_BPS = 0.0
 

@@ -779,6 +779,13 @@ def compute_metrics_pit(daily_returns: pd.DataFrame,
     """
     rows: Dict[str, Dict[str, float]] = {}
     for name, r in daily_returns.items():
+        r = r.dropna()
+        if len(r) < 2:
+            # backtest produced no usable observations for this strategy
+            rows[name] = dict(AnnReturn=np.nan, AnnVol=np.nan,
+                              Sharpe=np.nan, MaxDD=np.nan, Calmar=np.nan,
+                              Turnover=np.nan, SharpeStab=np.nan)
+            continue
         ann_ret = (1.0 + r).prod() ** (252.0 / len(r)) - 1.0
         ann_vol = r.std() * np.sqrt(252.0)
         sharpe = ann_ret / ann_vol if ann_vol > 0 else np.nan
@@ -899,55 +906,95 @@ def adjust_pvalues(pvals: np.ndarray, method: str = "holm") -> np.ndarray:
 # 7. SIMULATION
 # =============================================================================
 
-def simulate_factor_returns(T: int, N: int, K_true: int,
-                            structure: str = "sharp",
-                            seed: int = 0
-                            ) -> Tuple[np.ndarray, np.ndarray]:
+def _toeplitz_cov(N: int, rho: float) -> np.ndarray:
+    """AR(1)-style Toeplitz: Σ_ij = ρ^|i-j|. Dense, smoothly decaying."""
+    idx = np.arange(N)
+    return rho ** np.abs(idx[:, None] - idx[None, :])
+
+
+def _banded_cov(N: int, diag_var: float, bandwidth: int = 2,
+                decay: float = 0.4) -> np.ndarray:
     """
-    Generate synthetic returns from a strict factor model.
+    Banded covariance: nonzero entries only within `bandwidth` of the diagonal.
+    Used as a *truly sparse* idiosyncratic residual to give POET something to
+    actually threshold (a strict-diagonal residual is uninteresting because
+    NLS handles it equally well).
+    """
+    Sigma = np.zeros((N, N))
+    for k in range(-bandwidth, bandwidth + 1):
+        v = diag_var * decay ** abs(k)
+        np.fill_diagonal(Sigma[max(0, k):, max(0, -k):], v)
+    return Sigma
 
-        r_t = B f_t + ε_t,    Σ = B Λ_F B' + σ_ε² I
 
-    Parameters
-    ----------
-    structure : 'sharp' | 'medium' | 'diffuse'
-        Controls how separated factor variance is from idiosyncratic.
+def simulate_returns(T: int, N: int,
+                     regime: str = "factor_sparse",
+                     seed: int = 0
+                     ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Generate synthetic returns from one of three theoretically distinct regimes.
 
-        sharp   : few, high-variance factors with a clear eigenvalue gap
-                  (POET should dominate)
-        diffuse : many small factors blending into noise
-                  (NLS should dominate)
-        medium  : intermediate
+    Regimes
+    -------
+    'factor_sparse'  - low-rank common + TRULY SPARSE (banded) residual.
+                       This is the regime POET was *designed* for.
+                       Expect POET to be the leader; NLS competitive.
+    'toeplitz'       - AR(1) Toeplitz covariance, no factor structure, dense
+                       residual.  Eigenvalues decay smoothly without a gap.
+                       POET has no factors to extract -> should hurt itself
+                       by truncating signal as noise.
+                       Expect NLS to dominate; POET to lose to even Sample.
+    'identity_like'  - near-identity covariance (small uniform correlation).
+                       LW shrinks toward identity, which IS the truth here,
+                       so LW should be optimal.
 
     Returns
     -------
-    X : (T, N) simulated returns
-    Sigma_true : (N, N) true covariance
+    X : (T, N) simulated returns from N(0, Σ_true)
+    Sigma_true : the true covariance
     """
     rng = np.random.default_rng(seed)
-    if structure == "sharp":
-        # eigenvalue gap is huge -- ideal for POET
-        factor_var = np.array([5.0, 3.0, 1.5, 0.7, 0.3])[:K_true]
-        loading_scale = 1.0
-        idio_var = 0.5
-    elif structure == "medium":
-        factor_var = np.linspace(2.5, 0.5, K_true)
-        loading_scale = 1.0
-        idio_var = 1.0
-    elif structure == "diffuse":
-        # gradual eigen-tail; no clear factor cut-off
-        factor_var = np.linspace(1.0, 0.4, K_true)
-        loading_scale = 0.6
-        idio_var = 1.5
-    else:
-        raise ValueError(f"unknown structure {structure!r}")
 
-    B = rng.standard_normal((N, K_true)) * loading_scale
-    F = rng.standard_normal((T, K_true)) * np.sqrt(factor_var)
-    eps = rng.standard_normal((T, N)) * np.sqrt(idio_var)
-    X = F @ B.T + eps
-    Sigma_true = (B * factor_var) @ B.T + idio_var * np.eye(N)
+    if regime == "factor_sparse":
+        # 3 strong factors with clear eigenvalue gap
+        K = 3
+        factor_var = np.array([5.0, 3.0, 1.5])
+        B = rng.standard_normal((N, K))
+        common = (B * factor_var) @ B.T
+        # truly sparse banded residual
+        Sigma_idio = _banded_cov(N, diag_var=0.4, bandwidth=2, decay=0.4)
+        Sigma_true = common + Sigma_idio
+    elif regime == "toeplitz":
+        # smooth correlation decay -> no clear factor cut-off
+        Sigma_true = _toeplitz_cov(N, rho=0.5)
+    elif regime == "identity_like":
+        # weak uniform correlation; close to identity
+        rho = 0.05
+        Sigma_true = (1.0 - rho) * np.eye(N) + rho * np.ones((N, N))
+    else:
+        raise ValueError(f"unknown regime {regime!r}; "
+                         f"expected one of factor_sparse, toeplitz, "
+                         f"identity_like")
+
+    Sigma_true = _ensure_pd(Sigma_true)
+    # X ~ N(0, Σ_true): use Cholesky for speed
+    L_chol = np.linalg.cholesky(Sigma_true)
+    Z = rng.standard_normal((T, N))
+    X = Z @ L_chol.T
     return X, Sigma_true
+
+
+# Backwards-compat wrapper kept so older callers do not break.
+def simulate_factor_returns(T: int, N: int, K_true: int = 3,
+                            structure: str = "sharp",
+                            seed: int = 0
+                            ) -> Tuple[np.ndarray, np.ndarray]:
+    """Deprecated.  Calls simulate_returns with a regime mapping."""
+    mapping = {"sharp": "factor_sparse",
+               "medium": "factor_sparse",
+               "diffuse": "toeplitz"}
+    regime = mapping.get(structure, "factor_sparse")
+    return simulate_returns(T, N, regime=regime, seed=seed)
 
 
 def evaluate_sigma(Sigma_hat: np.ndarray,
@@ -965,13 +1012,22 @@ def evaluate_sigma(Sigma_hat: np.ndarray,
     return {"frobenius": frob, "minvar_true_var": mv}
 
 
-def run_simulation_study(T: int = 504, N: int = 100, K_true: int = 3,
-                         structures: Tuple[str, ...] = ("sharp", "medium", "diffuse"),
-                         n_reps: int = 30,
-                         seed0: int = 0) -> pd.DataFrame:
+def run_simulation_study(T: int = 300, N: int = 200,
+                         regimes: Tuple[str, ...] = ("factor_sparse",
+                                                      "toeplitz",
+                                                      "identity_like"),
+                         n_reps: int = 50,
+                         seed0: int = 0,
+                         **kwargs) -> pd.DataFrame:
     """
-    Sweep cov estimators over scenarios and replications.  Returns a long
-    DataFrame with one row per (structure, rep, estimator) combination.
+    Sweep cov estimators over the three theoretical regimes.
+
+    Defaults: T=300, N=200 -> N/T ≈ 0.67, in the "moderate high-dim"
+    regime where NLS / POET advantages are visible.
+
+    Returns a long DataFrame with one row per (regime, rep, estimator)
+    plus a per-replication 'relative_to_sample' column equal to
+    (loss_X - loss_sample) / loss_sample.  Negative means improvement.
     """
     estimators = {
         "Sample": cov_sample,
@@ -980,18 +1036,27 @@ def run_simulation_study(T: int = 504, N: int = 100, K_true: int = 3,
         "POET":   cov_poet,
     }
     rows: List[Dict] = []
-    for s in structures:
+    for s in regimes:
         for r in range(n_reps):
-            X, Sigma_true = simulate_factor_returns(
-                T, N, K_true, structure=s, seed=seed0 + r * 17 + hash(s) % 1000)
+            X, Sigma_true = simulate_returns(
+                T, N, regime=s, seed=seed0 + r * 17 + abs(hash(s)) % 1000)
+            base = evaluate_sigma(estimators["Sample"](X), Sigma_true)
             for name, fn in estimators.items():
                 try:
                     Sigma_hat = fn(X)
                     ev = evaluate_sigma(Sigma_hat, Sigma_true)
-                    rows.append(dict(structure=s, rep=r, estimator=name, **ev))
+                    # relative improvement vs Sample baseline
+                    rel_mv = ((ev["minvar_true_var"] - base["minvar_true_var"])
+                              / base["minvar_true_var"])
+                    rel_frob = ((ev["frobenius"] - base["frobenius"])
+                                / base["frobenius"])
+                    rows.append(dict(regime=s, rep=r, estimator=name,
+                                     **ev,
+                                     mv_relative=rel_mv,
+                                     frob_relative=rel_frob))
                 except Exception as e:
                     print(f"[sim] {s}/{r}/{name} failed: {e}")
-        print(f"[sim] structure={s} done ({n_reps} reps)")
+        print(f"[sim] regime={s} done ({n_reps} reps)")
     return pd.DataFrame(rows)
 
 
@@ -1066,16 +1131,95 @@ def plot_weights_heatmap(weights_log: Dict[str, pd.DataFrame], outdir: str,
 
 
 def plot_simulation_results(sim_df: pd.DataFrame, outdir: str) -> None:
+    """
+    Three figures:
+
+      1.  sim_minvar_relative.png : bar chart of mean (loss_X − loss_sample)
+                                    / loss_sample with 95% bootstrap CI per
+                                    (regime × estimator).  This is the headline
+                                    figure -- negative bars mean improvement
+                                    over Sample.
+      2.  sim_minvar_true_var.png : raw boxplots of the underlying loss
+                                    (kept for completeness / appendix).
+      3.  sim_frobenius.png       : Frobenius boxplots, with explicit caveat
+                                    that within-rep variance dominates here.
+    """
     _ensure_dir(outdir)
     sns.set_style("whitegrid")
-    for metric, ylabel in [("frobenius", "Frobenius loss"),
-                           ("minvar_true_var", "Min-Var portfolio variance")]:
-        fig, ax = plt.subplots(figsize=(8, 4))
-        sns.boxplot(data=sim_df, x="structure", y=metric, hue="estimator", ax=ax,
-                    order=["sharp", "medium", "diffuse"])
-        ax.set_title(f"Estimator comparison: {ylabel}")
-        ax.set_xlabel("Factor structure")
-        ax.set_ylabel(ylabel)
-        plt.tight_layout()
-        plt.savefig(f"{outdir}/sim_{metric}.png", dpi=120)
-        plt.close()
+
+    # 1. RELATIVE-IMPROVEMENT bar chart with bootstrap CI ---------------
+    rng = np.random.default_rng(0)
+
+    def boot_mean_ci(x: np.ndarray, n_boot: int = 2000) -> Tuple[float, float, float]:
+        x = np.asarray(x, dtype=float)
+        x = x[np.isfinite(x)]
+        if x.size < 2:
+            return float("nan"), float("nan"), float("nan")
+        idx = rng.integers(0, x.size, (n_boot, x.size))
+        means = x[idx].mean(axis=1)
+        return float(x.mean()), float(np.quantile(means, 0.025)), \
+               float(np.quantile(means, 0.975))
+
+    rows = []
+    for (regime, estimator), grp in sim_df.groupby(["regime", "estimator"]):
+        m, lo, hi = boot_mean_ci(grp["mv_relative"].values)
+        rows.append({"regime": regime, "estimator": estimator,
+                     "mean": m, "ci_lo": lo, "ci_hi": hi})
+    summary = pd.DataFrame(rows)
+
+    regimes = ["factor_sparse", "toeplitz", "identity_like"]
+    regimes = [r for r in regimes if r in summary["regime"].unique()]
+    estimators = ["Sample", "LW", "NLS", "POET"]
+    palette = {"Sample": "#7f7f7f", "LW": "#1f77b4",
+               "NLS": "#2ca02c",   "POET": "#d62728"}
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    x_idx = np.arange(len(regimes))
+    width = 0.2
+    for i, est in enumerate(estimators):
+        sub = summary[summary["estimator"] == est].set_index("regime")
+        means = [sub.loc[r, "mean"] if r in sub.index else np.nan for r in regimes]
+        los = [sub.loc[r, "ci_lo"] if r in sub.index else np.nan for r in regimes]
+        his = [sub.loc[r, "ci_hi"] if r in sub.index else np.nan for r in regimes]
+        err_lower = [m - lo for m, lo in zip(means, los)]
+        err_upper = [hi - m for m, hi in zip(means, his)]
+        ax.bar(x_idx + (i - 1.5) * width, means, width=width,
+               yerr=[err_lower, err_upper],
+               capsize=3, color=palette.get(est, "C0"),
+               edgecolor="black", linewidth=0.5,
+               label=est)
+    ax.axhline(0, color="black", lw=0.8)
+    ax.set_xticks(x_idx)
+    ax.set_xticklabels(regimes)
+    ax.set_ylabel("Min-Var portfolio variance: (X − Sample) / Sample")
+    ax.set_title("Relative improvement over Sample baseline\n"
+                 "(negative = better; bars = 95% bootstrap CI)")
+    ax.legend(title="Estimator", loc="best", fontsize=9)
+    plt.tight_layout()
+    plt.savefig(f"{outdir}/sim_minvar_relative.png", dpi=120)
+    plt.close()
+
+    # 2. raw MV boxplots (appendix) ------------------------------------
+    fig, ax = plt.subplots(figsize=(9, 4))
+    sns.boxplot(data=sim_df, x="regime", y="minvar_true_var",
+                hue="estimator", ax=ax, order=regimes,
+                palette=palette)
+    ax.set_title("Min-Var portfolio variance under true Σ (raw values)")
+    ax.set_xlabel("Regime")
+    ax.set_ylabel("Min-Var portfolio variance")
+    plt.tight_layout()
+    plt.savefig(f"{outdir}/sim_minvar_true_var.png", dpi=120)
+    plt.close()
+
+    # 3. Frobenius (with caveat in title) ------------------------------
+    fig, ax = plt.subplots(figsize=(9, 4))
+    sns.boxplot(data=sim_df, x="regime", y="frobenius",
+                hue="estimator", ax=ax, order=regimes,
+                palette=palette)
+    ax.set_title("Frobenius loss (NB: within-rep variance often dominates;\n"
+                 "see sim_minvar_relative.png for the portfolio-relevant view)")
+    ax.set_xlabel("Regime")
+    ax.set_ylabel("‖Σ̂ − Σ_true‖_F")
+    plt.tight_layout()
+    plt.savefig(f"{outdir}/sim_frobenius.png", dpi=120)
+    plt.close()
