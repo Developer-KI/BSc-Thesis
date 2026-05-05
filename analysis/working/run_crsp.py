@@ -49,9 +49,9 @@ import crsp_data as C
 # -----------------------------------------------------------------------------
 # Defaults (override via CLI)
 # -----------------------------------------------------------------------------
-DATA_CSV = "/mnt/user-data/uploads/data.csv"
-CONSTITUENTS_CSV = "/mnt/user-data/uploads/Constiuents.csv"
-PERMNO_LIST_TXT = "/mnt/user-data/uploads/unique_ids.txt"
+DATA_CSV = "./data/universe/stock_daily_returns.csv"
+CONSTITUENTS_CSV = "./data/universe/constiuents.csv"
+PERMNO_LIST_TXT = "./data/unique_ids.txt"
 
 # CRSP CIZ format column names; adjust if your file differs
 PRICE_COL = "DlyClose"
@@ -60,13 +60,13 @@ PERMNO_COL = "PERMNO"
 RET_COL = None  # set to e.g. "DlyRet" if you have precomputed returns
 
 # Sample period for the experiment
-START_DATE = "2000-01-01"
-END_DATE = "2024-12-31"
+START_DATE = "2015-01-01"
+END_DATE = "2025-12-31"
 
 # Lookbacks to sweep
-LOOKBACKS = (252, 504, 756)
+LOOKBACKS = (126, 252, 504, 756)
 REBALANCE = 21
-COST_BPS = 2.0
+COST_BPS = 0.0
 
 
 # -----------------------------------------------------------------------------
