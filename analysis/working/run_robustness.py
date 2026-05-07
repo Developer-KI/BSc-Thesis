@@ -62,17 +62,17 @@ PERMNO_LIST_TXT = "./data/unique_ids.txt"
 PRICE_COL = "DlyClose"
 DATE_COL = "DlyCalDt"
 PERMNO_COL = "PERMNO"
-RET_COL = None
+RET_COL = "DlyRet"   # CRSP CIZ daily total return (incl. dividends)
 
 # Sample period
 START_DATE = "2000-01-01"
 END_DATE = "2024-12-31"
 
 # Default grid (kept modest for runtime)
-DEFAULT_LOOKBACKS = "126, 252, 504, 756"
-DEFAULT_REBALANCES = "5, 21, 63"
+DEFAULT_LOOKBACKS = "252, 504,756, 1008"
+DEFAULT_REBALANCES = "5, 21,63"
 DEFAULT_LINKAGES = "single,average,ward"
-DEFAULT_COST_BPS = 0.0
+DEFAULT_COST_BPS = 2.0
 
 
 # -----------------------------------------------------------------------------

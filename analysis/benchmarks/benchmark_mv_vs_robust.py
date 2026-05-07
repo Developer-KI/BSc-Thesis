@@ -18,7 +18,7 @@ warnings.filterwarnings('ignore')
 
 
 # --- DATA LOADING & SYNC ---
-START_DATE = "2021-06-01"
+START_DATE = "2018-06-01"
 END_DATE = "2022-06-01"
 PM_cov_window = 66
 RUN_IDENTIFIER = "MV_Standard_vs_Robust"

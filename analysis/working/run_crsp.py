@@ -53,20 +53,22 @@ DATA_CSV = "./data/universe/stock_daily_returns.csv"
 CONSTITUENTS_CSV = "./data/universe/constiuents.csv"
 PERMNO_LIST_TXT = "./data/unique_ids.txt"
 
-# CRSP CIZ format column names; adjust if your file differs
+# CRSP CIZ format defaults
 PRICE_COL = "DlyClose"
 DATE_COL = "DlyCalDt"
 PERMNO_COL = "PERMNO"
-RET_COL = None  # set to e.g. "DlyRet" if you have precomputed returns
+RET_COL = "DlyRet"   # CRSP CIZ daily total return (incl. dividends).
+                     # Set to None to compute log returns from DlyClose
+                     # (price-only; biases against high-dividend stocks).
 
 # Sample period for the experiment
-START_DATE = "2015-01-01"
-END_DATE = "2025-12-31"
+START_DATE = "2018-01-01"
+END_DATE = "2024-12-31"
 
 # Lookbacks to sweep
-LOOKBACKS = (126, 252, 504, 756)
+LOOKBACKS = (126, 252)
 REBALANCE = 21
-COST_BPS = 0.0
+COST_BPS = 2.0
 
 
 # -----------------------------------------------------------------------------
