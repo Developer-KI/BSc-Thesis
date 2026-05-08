@@ -41,8 +41,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import hrp_lib as L
-import crsp_data as C
+import analysis.hrp_lib as L
+import analysis.crsp_data as C
 
 
 # -----------------------------------------------------------------------------

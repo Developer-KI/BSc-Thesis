@@ -26,14 +26,14 @@ import pandas as pd
 import yfinance as yf
 from sklearn.covariance import LedoitWolf
 
-import analysis.engine.backtest as bt
+import research.engine.backtest as bt
 bt.PRIOR_TYPE = "historical_mean"
 bt.RETURN_SMOOTHING = "shrink"
 bt.SHRINK_FACTOR = 1.0
 
 
 # ── re-use everything already in your project ──────────────────────────────
-from analysis.engine.backtest import (
+from research.engine.backtest import (
     RISK_AVERSION, RISK_FREE_RATE,
     TRAIN_WINDOW_MONTHS, SHRINK_FACTOR, PRIOR_TYPE, RETURN_SMOOTHING,
     get_spy_regime_labels,

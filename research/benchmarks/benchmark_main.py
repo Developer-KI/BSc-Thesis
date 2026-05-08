@@ -9,9 +9,11 @@ from pathlib import Path
 from scipy.spatial import distance
 from numpy import linalg as la
 from scipy.cluster.hierarchy import linkage
+# Need to cite to use in published work
+from pypfopt import EfficientFrontier, risk_models, expected_returns, objective_functions
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils.plotting import (
+from analysis.plotting import (
     plot_dendrogram, plot_cumulative_returns, plot_drawdown,
     plot_rolling_sharpe, plot_sharpe_bar, plot_performance_summary,
 )
@@ -22,6 +24,8 @@ tf.disable_eager_execution()
 tf.logging.set_verbosity(tf.logging.ERROR)
 warnings.filterwarnings('ignore')
 real_type = tf.float32
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 # --- MATHEMATICAL UTILITIES ---
@@ -131,14 +135,12 @@ def objective(trial, X_data, Y_data):
 # --- DATA LOADING & SYNC ---
 START_DATE = "2021-06-01"
 END_DATE = "2022-06-01"
-RUN_IDENTIFIER = "HRP_vs_HSP"
 
 # HYPERPARAMETERS
 N_DRIVERS_SELECTION = 12
 PM_cov_window = 66
 N_CORR = 125
 TRIALS = 8
-optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 Drivers = pd.read_excel(r'./data/sensitivity_drivers.xlsx').set_index("Date")
 Constituents = pd.read_excel(r'./data/test_assets.xlsx').set_index('Date')
@@ -154,22 +156,22 @@ if START_DATE != "":
 
 actual_start = Data_Drivers_shift0.index[0].strftime('%Y-%m-%d')
 actual_end   = END_DATE if END_DATE != "" else Data_Drivers_shift0.index[-1].strftime('%Y-%m-%d')
-# FOLDER NAME includes the identifier of the run
-RESULTS_DIR  = Path(__file__).resolve().parent.parent / 'results' / f'{actual_start}_to_{actual_end}_{RUN_IDENTIFIER}'
+RESULTS_DIR  = Path(__file__).resolve().parent.parent / 'results' / f'{actual_start}_to_{actual_end}'
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 print(f"Results will be saved to: {RESULTS_DIR}")
 
 dates_series = Data_Drivers_shift0.index[N_CORR::22]
 
 # Storage
-weights_history = {m: pd.DataFrame() for m in ['HSP', 'HRP', '1/N']}
+weights_history = {m: pd.DataFrame() for m in ['HSP', 'HRP', 'MinVol', 'MaxSharpe', 'Robust_MinVol', 'Robust_MaxSharpe', '1/N']}
 is_metrics = []
 last_hsp_link, last_hrp_link = None, None
 
 # --- CORE BACKTEST LOOP ---
-for rebalance_date in tqdm(dates_series, desc="Hierarchical Backtest"):
+for rebalance_date in tqdm(dates_series, desc="Monthly Optimization"):
     ii = Data_Drivers_shift0.index.get_loc(rebalance_date)
     lookback_returns = Data_Assets.iloc[ii-PM_cov_window:ii]
+    lookback_prices = Constituents.iloc[ii-PM_cov_window:ii]
     cov = lookback_returns.cov()
     
     # Create Sensitivity Matrix
@@ -208,24 +210,40 @@ for rebalance_date in tqdm(dates_series, desc="Hierarchical Backtest"):
             sens_vals = sess.run(greeks_op, feed_dict={inputs: X_pde})
             sens_results.append(np.append(np.nan_to_num(np.mean(sens_vals, axis=0))[:N_DRIVERS_SELECTION], asset))
 
-    # 1. HSP (Hierarchical Sensitivity Parity)
+    # 1. HSP 
     df_sens = pd.DataFrame(sens_results, columns=selected_drivers + ["Asset"]).set_index("Asset").astype(float).reindex(Assets_Names)
     hsp_link = linkage(nearestPD(distance.cdist(df_sens.values, df_sens.values, 'euclidean')), 'single')
     last_hsp_link = hsp_link
     w_hsp = get_rec_bipart(cov, get_quasi_diag(hsp_link))
     w_hsp.index = [Assets_Names[i] for i in w_hsp.index]
 
-    # 2. HRP (Hierarchical Risk Parity)
+    # 2. HRP
     hrp_link = linkage(lookback_returns.corr(), 'single')
     last_hrp_link = hrp_link
     w_hrp = get_rec_bipart(cov, get_quasi_diag(hrp_link))
     w_hrp.index = [Assets_Names[i] for i in w_hrp.index]
 
-    # 3. Benchmark 1/N
+    # 3. Efficient Frontier
+    mu, S_risk = expected_returns.mean_historical_return(lookback_prices), risk_models.sample_cov(lookback_prices)
+    ef = EfficientFrontier(mu, S_risk); w_minvol = pd.Series(ef.min_volatility())
+    ef = EfficientFrontier(mu, S_risk); w_maxsharpe = pd.Series(ef.max_sharpe())
+
+    # 4. Benchmark 1/N
     w_equal = pd.Series(1/len(Assets_Names), index=Assets_Names)
 
+    # 5. Robust: Ledoit-Wolf + L2 Regularization
+    S_robust = risk_models.CovarianceShrinkage(lookback_prices).ledoit_wolf()
+
+    ef_robust = EfficientFrontier(mu, S_robust)
+    ef_robust.add_objective(objective_functions.L2_reg, gamma=0.1)
+    w_robust_min = pd.Series(ef_robust.min_volatility())
+
+    ef_robust = EfficientFrontier(mu, S_robust)
+    ef_robust.add_objective(objective_functions.L2_reg, gamma=0.1)
+    w_robust_max = pd.Series(ef_robust.max_sharpe())
+
     # Weights Sync
-    model_list = [w_hsp, w_hrp, w_equal]
+    model_list = [w_hsp, w_hrp, w_minvol, w_maxsharpe, w_robust_min, w_robust_max, w_equal]
     for name, w in zip(weights_history.keys(), model_list):
         temp_w = pd.Series(w).reindex(Assets_Names).fillna(0)
         temp_w['Date'] = rebalance_date
@@ -245,7 +263,7 @@ for link, label in zip([last_hsp_link, last_hrp_link], ["HSP", "HRP"]):
         save_path=str(RESULTS_DIR / f"{label}_Dendrogram.png"),
     )
 
-# Out-of-Sample returns calculation
+# Out-of-Sample returns
 oos_returns = pd.DataFrame()
 for i in range(len(Data_Assets)):
     dt = Data_Assets.index[i]
@@ -259,32 +277,31 @@ for i in range(len(Data_Assets)):
 
 oos_returns.set_index('Date', inplace=True)
 
-# Standard plots from original script
 plot_cumulative_returns(
     oos_returns,
-    title=f"OOS Cumulative Returns – {RUN_IDENTIFIER}",
+    title="OOS Cumulative Returns – Strategy Comparison",
     save_path=str(RESULTS_DIR / "OOS_Cumulative_Returns.png"),
 )
 plot_drawdown(
     oos_returns,
-    title=f"OOS Drawdown – {RUN_IDENTIFIER}",
+    title="OOS Drawdown",
     save_path=str(RESULTS_DIR / "OOS_Drawdown.png"),
 )
 plot_rolling_sharpe(
     oos_returns,
-    title=f"OOS Rolling Sharpe Ratio – {RUN_IDENTIFIER}",
+    title="OOS Rolling Sharpe Ratio",
     save_path=str(RESULTS_DIR / "OOS_Rolling_Sharpe.png"),
 )
 
-# In-Sample Sharpe bar chart
+# In-Sample Sharpe
 is_summary = pd.DataFrame(is_metrics).groupby('Strategy')['Sharpe'].mean()
 plot_sharpe_bar(
     is_summary,
-    title="Average In-Sample Sharpe (Calibration)",
+    title="Average In-Sample Sharpe (Model Calibration)",
     save_path=str(RESULTS_DIR / "IS_Sharpe_Comparison.png"),
 )
 
-# Final stats table and Performance Summary Panel
+# Final stats table
 cum_returns = (1 + oos_returns).cumprod()
 max_dd = ((cum_returns / cum_returns.cummax()) - 1).min() * 100
 

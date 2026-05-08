@@ -10,7 +10,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from pykalman import KalmanFilter
 
-from engine.regimes import run_sjm
+from research.engine.regimes import run_sjm
 
 # ===========================
 # CONFIGURATION

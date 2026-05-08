@@ -54,7 +54,7 @@ from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
 import yfinance as yf
 
-from engine.backtest import (
+from research.engine.backtest import (
     RISK_AVERSION, TURNOVER_PENALTY, L2_REG, RISK_FREE_RATE,
     TRAIN_WINDOW_MONTHS, LOOKBACK_COV,
     get_spy_regime_labels,

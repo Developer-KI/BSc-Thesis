@@ -75,7 +75,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import yfinance as yf
 
-from engine.backtest import (
+from research.engine.backtest import (
     RISK_AVERSION, TURNOVER_PENALTY, L2_REG, RISK_FREE_RATE,
     LOOKBACK_COV,
     fetch_and_engineer_features,
