@@ -513,11 +513,10 @@ Data:
 4. Results
 
 - Run cov simulation study to motivate covarinace improvement idea Sample vs All, then LW vs NLS, POET - run_simulation.py (2 pages) (done with results)
-- Sample vs LW, NLS, POET HRP - run_crsp.py (2 pages) (result seems to be the alpha doesnt come from shrinkage only, done with results, only 0 bps linear cost)
-- Replicate
-- Start using LW MHRP as basis to comapre to NLS, POET MHRP overall and with transaction costs - run_robustness.py
-- Innovate on MHRP with advanced methods like DCC-GARCH or else
-- Run a transaction cost stress test for best performing NLS or POET tests to see if alpha get preserved vs LW or Sample (does this have a point)
+- Sample vs LW, NLS, POET HRP wtih 1/N, SPY-K benchmarks - run_crsp.py (2 pages) (result seems to be the alpha doesnt come from shrinkage only, done with results, only 0 bps linear cost)
+- Replicate MHRP
+- Innovate on MHRP with advanced dynamic covariance methods like DCC-GARCH or else
+- Start using best LW MHRP as basis to comapre to advanced shrinkage NLS, POET MHRP overall and with transaction costs - run_robustness.py
 
 5. Conclussion
 

@@ -621,7 +621,7 @@ def make_crsp_strategies(linkage_method: str = "single",
         "EW":          (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
-        strategies["SPYK"] = (cov_sample, make_spyk_allocator(market_cap_wide))
+        strategies["SPY-K"] = (cov_sample, make_spyk_allocator(market_cap_wide))
     return strategies
 
 
