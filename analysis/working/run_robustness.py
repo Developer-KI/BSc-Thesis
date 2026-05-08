@@ -5,32 +5,31 @@ run_robustness.py - CRSP point-in-time robustness sweep
 
 Sweeps the empirical experiment over a configurable grid of:
 
-    lookback    in {252, 504, 756}                (1 / 2 / 3 years)
-    rebalance   in {5, 21, 63}                    (weekly / monthly / quarterly)
-    linkage     in {single, average, ward}        (HRP linkage method)
+    lookback    in {126, 252, 504}                (0.5 / 1 / 2 years)
+    cost_bps    in {0, 2, 5, 10}                  (transaction cost levels)
+    linkage     in {single, average, ward}        (HRP linkage method, averaged)
+
+Rebalance frequency is fixed (default = 21 days / monthly).
 
 This is the *companion* to run_crsp.py: run_crsp.py answers
 "do the advanced estimators help?" at the default settings; this script
 answers "is that conclusion robust to the parameter choices?"
 
 Defaults are tuned for ~2-3h on a modern laptop:
-    lookbacks   = 504, 756
-    rebalances  = 21, 63
-    linkages    = single, average, ward
-        => 2 x 2 x 3 = 12 cells
-
-The full 3 x 3 x 3 = 27-cell sweep (-> ~6h) is one CLI flag away:
-    python run_robustness.py --lookbacks 252,504,756 --rebalances 5,21,63
+    lookbacks  = 126, 252, 504
+    costs      = 0, 2, 5, 10
+    linkages   = single, average, ward
+        => 3 x 4 x 3 = 36 cells
 
 Speed-up tricks:
     * The CRSP file is read ONCE at startup and shared across all cells.
-    * --no-apoet skips Adaptive POET (the runtime bottleneck): ~5x faster.
+    * --no-apoet skips POET-CV (the runtime bottleneck): ~5x faster.
     * --strategies filters the strategy set; e.g. drop slow MinVar-NLS.
 
 Outputs in results/crsp_robustness/:
     robustness_long.csv      one row per (cell, strategy)
     robustness_summary.csv   aggregated across cells per strategy
-    heatmap_*.png            per-strategy Sharpe-vs-base heatmaps
+    heatmap_*.png            per-strategy Sharpe-vs-base heatmaps (lookback x cost)
 =============================================================================
 """
 
@@ -62,17 +61,18 @@ PERMNO_LIST_TXT = "./data/unique_ids.txt"
 PRICE_COL = "DlyClose"
 DATE_COL = "DlyCalDt"
 PERMNO_COL = "PERMNO"
-RET_COL = "DlyRet"   # CRSP CIZ daily total return (incl. dividends)
+RET_COL = "DlyRet"
 
 # Sample period
 START_DATE = "2000-01-01"
-END_DATE = "2024-12-31"
+END_DATE = "2025-01-01"
 
-# Default grid (kept modest for runtime)
-DEFAULT_LOOKBACKS = "252, 504,756, 1008"
-DEFAULT_REBALANCES = "5, 21,63"
+# Default grid
+DEFAULT_LOOKBACKS = "126,252,504"
+DEFAULT_COSTS = "0,2,5,10"
 DEFAULT_LINKAGES = "single,average,ward"
-DEFAULT_COST_BPS = 2.0
+DEFAULT_REBALANCE = 21
+DEFAULT_TOP_K = 100
 
 
 # -----------------------------------------------------------------------------
@@ -100,30 +100,29 @@ def filter_strategies(strategies: dict,
 def run_grid(returns_wide: pd.DataFrame,
              universe_fn: C.UniverseFn,
              lookbacks: List[int],
-             rebalances: List[int],
+             costs: List[float],
              linkages: List[str],
-             cost_bps: float,
+             rebalance: int,
              strategies_keep: List[str],
              drop_apoet: bool = False,
              rf_daily: pd.Series = None,
              ) -> pd.DataFrame:
     rows = []
-    total = len(lookbacks) * len(rebalances) * len(linkages)
+    total = len(lookbacks) * len(costs) * len(linkages)
     cnt = 0
     grid_t0 = time.time()
 
     for lb in lookbacks:
-        for rb in rebalances:
+        for cost in costs:
             for lnk in linkages:
                 cnt += 1
                 cell_t0 = time.time()
                 print("\n" + "-" * 72)
-                print(f"[grid {cnt}/{total}]  lookback={lb}  rebal={rb}  "
+                print(f"[grid {cnt}/{total}]  lookback={lb}  cost_bps={cost}  "
                       f"linkage={lnk}")
                 print("-" * 72)
 
-                # Fresh strategies per cell so AdaPOET history doesn't leak.
-                strategies, apoet = L.make_crsp_strategies(linkage_method=lnk)
+                strategies = L.make_crsp_strategies(linkage_method=lnk)
                 strategies = filter_strategies(strategies, strategies_keep,
                                                drop_apoet=drop_apoet)
                 print(f"  strategies in this cell: {list(strategies.keys())}")
@@ -131,17 +130,16 @@ def run_grid(returns_wide: pd.DataFrame,
                 try:
                     daily, weights = L.backtest_pit(
                         returns_wide, universe_fn, strategies,
-                        lookback=lb, rebalance=rb,
-                        cost_bps=cost_bps, rf_daily=rf_daily,
+                        lookback=lb, rebalance=rebalance,
+                        cost_bps=cost, rf_daily=rf_daily,
                         verbose=True)
                     metrics = L.compute_metrics_pit(daily, weights)
 
-                    # use HRP-Sample as the reference
                     base_sr = metrics.loc["HRP-Sample", "Sharpe"] \
                         if "HRP-Sample" in metrics.index else np.nan
                     for strat, m in metrics.iterrows():
                         rows.append({
-                            "lookback": lb, "rebalance": rb, "linkage": lnk,
+                            "lookback": lb, "cost_bps": cost, "linkage": lnk,
                             "strategy": strat,
                             "ann_return": m["AnnReturn"],
                             "ann_vol": m["AnnVol"],
@@ -150,14 +148,11 @@ def run_grid(returns_wide: pd.DataFrame,
                             "calmar": m["Calmar"],
                             "turnover": m["Turnover"],
                             "sharpe_minus_base": m["Sharpe"] - base_sr,
-                            "n_apoet_history": (len(apoet.history)
-                                                if "HRP-PoetCV" in metrics.index
-                                                else 0),
                         })
                 except Exception as e:
                     print(f"  ! cell failed: {type(e).__name__}: {e}")
                     rows.append({
-                        "lookback": lb, "rebalance": rb, "linkage": lnk,
+                        "lookback": lb, "cost_bps": cost, "linkage": lnk,
                         "strategy": "FAILED", "error": str(e),
                     })
 
@@ -176,7 +171,7 @@ def run_grid(returns_wide: pd.DataFrame,
 # -----------------------------------------------------------------------------
 
 def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
-    """One ΔSharpe-vs-base heatmap per strategy, averaged over linkage."""
+    """One ΔSharpe-vs-base heatmap per strategy (lookback × cost_bps), averaged over linkage."""
     os.makedirs(outdir, exist_ok=True)
     sns.set_style("white")
 
@@ -189,17 +184,19 @@ def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
     for strat in strategies:
         sub = df[df["strategy"] == strat]
         try:
-            pivot = (sub.groupby(["lookback", "rebalance"])["sharpe_minus_base"]
-                        .mean().unstack("rebalance"))
+            pivot = (sub.groupby(["lookback", "cost_bps"])["sharpe_minus_base"]
+                        .mean().unstack("cost_bps"))
         except Exception:
             continue
         if pivot.empty:
             continue
-        fig, ax = plt.subplots(figsize=(5.5, 4))
+        fig, ax = plt.subplots(figsize=(6, 4))
         sns.heatmap(pivot, annot=True, fmt=".3f", cmap="RdBu_r",
                     center=0, ax=ax, cbar_kws={"label": "ΔSharpe vs HRP-Sample"})
         ax.set_title(f"{strat}: Sharpe − HRP-Sample\n"
                      f"averaged over linkage methods")
+        ax.set_xlabel("cost_bps")
+        ax.set_ylabel("lookback")
         plt.tight_layout()
         safe = strat.replace("-", "_").replace("/", "_")
         plt.savefig(f"{outdir}/heatmap_{safe}.png", dpi=120)
@@ -207,7 +204,7 @@ def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
 
 
 def linkage_sensitivity_plot(df: pd.DataFrame, outdir: str) -> None:
-    """How much does linkage matter, holding lookback x rebalance fixed?"""
+    """How much does linkage matter, holding lookback × cost_bps fixed?"""
     df = df[df["strategy"] != "FAILED"].copy()
     if df.empty:
         return
@@ -217,7 +214,7 @@ def linkage_sensitivity_plot(df: pd.DataFrame, outdir: str) -> None:
         return
     fig, ax = plt.subplots(figsize=(9, 5))
     sns.boxplot(data=sub, x="strategy", y="sharpe", hue="linkage", ax=ax)
-    ax.set_title("Sharpe distribution across (lookback × rebalance) cells "
+    ax.set_title("Sharpe distribution across (lookback × cost_bps) cells "
                  "by linkage method")
     plt.xticks(rotation=20, ha="right")
     plt.tight_layout()
@@ -238,19 +235,20 @@ def main(argv=None) -> None:
     p.add_argument("--constituents", default=CONSTITUENTS_CSV)
     p.add_argument("--start", default=START_DATE)
     p.add_argument("--end", default=END_DATE)
+    p.add_argument("--top-k", type=int, default=DEFAULT_TOP_K,
+                   help="Keep only top K PERMNOs by market cap each rebalance")
     p.add_argument("--lookbacks", default=DEFAULT_LOOKBACKS,
-                   help="comma-separated, e.g. 252,504,756")
-    p.add_argument("--rebalances", default=DEFAULT_REBALANCES,
-                   help="comma-separated, e.g. 5,21,63")
+                   help="comma-separated, e.g. 126,252,504")
+    p.add_argument("--costs", default=DEFAULT_COSTS,
+                   help="comma-separated cost_bps levels, e.g. 0,2,5,10")
+    p.add_argument("--rebalance", type=int, default=DEFAULT_REBALANCE,
+                   help="rebalance frequency in trading days (fixed)")
     p.add_argument("--linkages", default=DEFAULT_LINKAGES,
                    help="comma-separated, e.g. single,average,ward")
-    p.add_argument("--cost-bps", type=float, default=DEFAULT_COST_BPS)
     p.add_argument("--strategies",
-                   default="HRP-Sample,HRP-LW,HRP-NLS,HRP-POET,HRP-PoetCV,"
-                           "EW,MinVar-LW,MinVar-NLS,RP-Sample",
+                   default="HRP-Sample,HRP-LW,HRP-NLS,HRP-POET,HRP-POETRY,"
+                           "MHRP,MHRP-LW,MHRP-NLS,EW",
                    help="comma-separated strategy names to include")
-    p.add_argument("--no-apoet", action="store_true",
-                   help="drop HRP-PoetCV (the runtime bottleneck) to save time")
     p.add_argument("--out", default="results/crsp_robustness")
     args = p.parse_args(argv)
 
@@ -258,7 +256,7 @@ def main(argv=None) -> None:
     os.makedirs(args.out, exist_ok=True)
 
     lookbacks = [int(x) for x in args.lookbacks.split(",") if x.strip()]
-    rebalances = [int(x) for x in args.rebalances.split(",") if x.strip()]
+    costs = [float(x) for x in args.costs.split(",") if x.strip()]
     linkages = [x.strip() for x in args.linkages.split(",") if x.strip()]
     strategies_keep = [x.strip() for x in args.strategies.split(",") if x.strip()]
 
@@ -266,12 +264,13 @@ def main(argv=None) -> None:
     print(" CRSP S&P 500 robustness sweep")
     print("=" * 72)
     print(f"  lookbacks  : {lookbacks}")
-    print(f"  rebalances : {rebalances}")
-    print(f"  linkages   : {linkages}")
+    print(f"  costs_bps  : {costs}")
+    print(f"  rebalance  : {args.rebalance}")
+    print(f"  linkages   : {linkages}  (averaged in heatmaps)")
+    print(f"  top_k      : {args.top_k}")
     print(f"  strategies : {strategies_keep}"
           f"{'  (no-apoet)' if args.no_apoet else ''}")
-    print(f"  cost_bps   : {args.cost_bps}")
-    print(f"  total cells: {len(lookbacks) * len(rebalances) * len(linkages)}")
+    print(f"  total cells: {len(lookbacks) * len(costs) * len(linkages)}")
 
     # -- 1.  Load CRSP returns ONCE -------------------------------------
     permno_subset = None
@@ -293,7 +292,11 @@ def main(argv=None) -> None:
         ret_col=RET_COL,
     )
 
-    universe_fn = C.make_universe_fn(args.constituents)
+    universe_fn = C.make_universe_fn(
+        args.constituents,
+        market_cap_csv=args.data if args.top_k else None,
+        top_k=args.top_k,
+    )
 
     # rf = 0 for the CRSP run (see run_crsp.py for justification)
     rf_daily = pd.Series(0.0, index=returns_wide.index)
@@ -302,11 +305,11 @@ def main(argv=None) -> None:
     df = run_grid(
         returns_wide, universe_fn,
         lookbacks=lookbacks,
-        rebalances=rebalances,
+        costs=costs,
         linkages=linkages,
-        cost_bps=args.cost_bps,
+        rebalance=args.rebalance,
         strategies_keep=strategies_keep,
-        drop_apoet=args.no_apoet,
+        drop_apoet=False,
         rf_daily=rf_daily,
     )
 

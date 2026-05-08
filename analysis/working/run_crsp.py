@@ -3,7 +3,7 @@
 run_crsp.py - Point-in-time CRSP S&P 500 experiment
 =============================================================================
 
-Runs the HRP x covariance comparison on the *true* time-varying S&P 500
+Runs the HRP x ariance comparison on the *true* time-varying S&P 500
 universe using CRSP daily data, swept over three lookback configurations:
 
     lookback = 252  trading days  (~ 1 year)   -> N/T ~ 2.0   (p > n)
@@ -24,7 +24,6 @@ Outputs in results/crsp_lb{LB}/:
     metrics.csv                # headline metrics table
     statistical_tests.csv      # DM + LW Sharpe, Holm + BH adjusted
     daily_excess_returns.csv
-    apoet_history.{csv,png}    # adaptive POET (K, C) trace
     universe_sizes.csv         # diagnostic: N_t at each rebalance
     *.png                      # equity / drawdown / sharpe / turnover / etc.
 
@@ -57,18 +56,19 @@ PERMNO_LIST_TXT = "./data/unique_ids.txt"
 PRICE_COL = "DlyClose"
 DATE_COL = "DlyCalDt"
 PERMNO_COL = "PERMNO"
-RET_COL = "DlyRet"   # CRSP CIZ daily total return (incl. dividends).
-                     # Set to None to compute log returns from DlyClose
-                     # (price-only; biases against high-dividend stocks).
+RET_COL = "DlyRet"
 
 # Sample period for the experiment
-START_DATE = "2018-01-01"
-END_DATE = "2024-12-31"
+START_DATE = "2000-01-01"
+END_DATE = "2025-01-01"
+TOP_K = 100
 
-# Lookbacks to sweep
-LOOKBACKS = (126, 252)
+# Lookbacks to sweep: 0.25y, 0.5y, 1y, 2y
+LOOKBACKS = (21, 63, 126, 252, 504)
 REBALANCE = 21
-COST_BPS = 2.0
+
+RISK_FREE = 0.0
+COST_BPS = 0.0
 
 
 # -----------------------------------------------------------------------------
@@ -85,7 +85,9 @@ def riskfree_proxy(dates: pd.DatetimeIndex) -> pd.Series:
     cash = 0) and document it.  Replace with a proper FRED DGS3MO series
     or CRSP T-bill file when available.
     """
-    return pd.Series(0.0, index=dates)
+    daily_rate = (1 + RISK_FREE)**(1/365) - 1
+
+    return pd.Series(daily_rate, index=dates)
 
 
 def run_one_lookback(returns_wide: pd.DataFrame,
@@ -95,12 +97,12 @@ def run_one_lookback(returns_wide: pd.DataFrame,
                      cost_bps: float,
                      outdir: str) -> pd.DataFrame:
     print("\n" + "=" * 72)
-    print(f" CRSP S&P 500  -  lookback = {lookback} (N/T ~ {500/lookback:.2f})")
+    print(f" CRSP S&P 500  -  lookback = {lookback} (N/T ~ {TOP_K/lookback:.2f})")
     print("=" * 72)
     os.makedirs(outdir, exist_ok=True)
 
     rf = riskfree_proxy(returns_wide.index)
-    strategies, apoet = L.make_crsp_strategies(linkage_method="single")
+    strategies = L.make_crsp_strategies(linkage_method="single")
 
     daily, weights = L.backtest_pit(returns_wide, universe_fn, strategies,
                                     lookback=lookback, rebalance=rebalance,
@@ -136,21 +138,6 @@ def run_one_lookback(returns_wide: pd.DataFrame,
     suffix = f"(CRSP lookback={lookback})"
     L.plot_equity_and_drawdown(daily, outdir, title_suffix=suffix)
     L.plot_metric_bars(metrics, outdir, title_suffix=suffix)
-
-    # apoet diagnostic
-    if apoet.history:
-        hist = pd.DataFrame(apoet.history)
-        hist.to_csv(f"{outdir}/apoet_history.csv", index_label="rebal")
-        fig, ax = plt.subplots(2, 1, figsize=(9, 5), sharex=True)
-        ax[0].plot(hist["K"], marker="o", lw=1)
-        ax[0].set_ylabel("K* (chosen)")
-        ax[0].set_title(f"Adaptive POET CV choices  {suffix}")
-        ax[1].plot(hist["C"], marker="s", color="darkorange", lw=1)
-        ax[1].set_ylabel("C* (chosen)")
-        ax[1].set_xlabel("Rebalance index")
-        plt.tight_layout()
-        plt.savefig(f"{outdir}/apoet_history.png", dpi=120)
-        plt.close()
 
     metrics["lookback"] = lookback
     metrics.index.name = "strategy"
@@ -194,6 +181,8 @@ def main(argv: List[str] = None) -> None:
     p.add_argument("--constituents", default=CONSTITUENTS_CSV)
     p.add_argument("--start", default=START_DATE)
     p.add_argument("--end", default=END_DATE)
+    p.add_argument("--top-k", type=int, default=TOP_K,
+                   help="Keep only top K PERMNOs by market cap each rebalance")
     p.add_argument("--lookbacks", default=",".join(str(x) for x in LOOKBACKS),
                    help="comma-separated, e.g. 252,504,756")
     p.add_argument("--rebalance", type=int, default=REBALANCE)
@@ -225,8 +214,11 @@ def main(argv: List[str] = None) -> None:
     )
 
     # 2. load constituents
-    universe_fn = C.make_universe_fn(args.constituents)
-
+    universe_fn = C.make_universe_fn(
+        args.constituents,
+        market_cap_csv=args.data if args.top_k else None,
+        top_k=args.top_k
+    )
     # 3. sweep lookbacks
     summary_pieces = []
     for lb in lookbacks:

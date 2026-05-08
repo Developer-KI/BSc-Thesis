@@ -6,12 +6,12 @@ hrp_lib.py - Building blocks for the HRP x Covariance Estimator experiment
 Contents
 --------
 1.  Universe definitions and data loaders
-2.  Covariance estimators (sample, LW linear, LW non-linear, POET, adaptive POET)
+2.  Covariance estimators (sample, LW linear, LW non-linear, POET, POET-CV)
 3.  Portfolio allocators (HRP, MinVar long-only, naive risk parity, equal-weight)
 4.  Backtest engine with weight drift and proportional transaction costs
 5.  Performance metrics (return, vol, Sharpe, drawdown, Calmar, turnover, stability)
 6.  Statistical tests (DM, LW2008-style block-bootstrap Sharpe test, Holm and BH)
-7.  Factor-model simulation engine
+7.  Factor-model simulation engine (including power-law decay & weak factor regimes)
 8.  Plot helpers
 
 This module is import-only.  See run_main.py / run_robustness.py /
@@ -39,58 +39,10 @@ from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import squareform
 from scipy.stats import norm
 from scipy.optimize import minimize
+from sklearn.model_selection import KFold
 
-
-# =============================================================================
-# 1. UNIVERSES AND DATA
-# =============================================================================
-
-ETF_UNIVERSE: List[str] = [
-    # Broad US equity / style
-    "SPY", "QQQ", "IWM", "MDY",
-    # International equity
-    "EFA", "EEM", "EWJ", "EWG", "EWU",
-    # Fixed income
-    "TLT", "IEF", "SHY", "LQD", "HYG", "TIP",
-    # Commodities
-    "GLD", "SLV", "DBC", "USO",
-    # US sectors (Select Sector SPDRs)
-    "XLE", "XLF", "XLV", "XLK", "XLI", "XLP", "XLU", "XLY", "XLB",
-    # Real estate / themes
-    "VNQ", "SMH",
-]
-
-
-# Roughly 100 large-cap US stocks chosen for stable history 2015-present.
-# This list contains survivorship bias by construction (these are firms
-# that existed and were liquid for the full period).  Document this in
-# the thesis and replace with a properly point-in-time CRSP universe later.
-STOCKS_UNIVERSE: List[str] = [
-    # Tech / Communication
-    "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "AVGO", "ORCL", "CRM",
-    "ADBE", "CSCO", "ACN", "AMD", "INTC", "IBM", "TXN", "QCOM", "INTU",
-    "NOW", "AMAT", "ADI", "MU", "LRCX", "KLAC", "PANW",
-    "NFLX", "T", "VZ", "TMUS", "CMCSA", "DIS",
-    # Financials
-    "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "BLK", "AXP", "C",
-    "USB", "PNC", "SCHW", "BK", "CME", "ICE", "SPGI",
-    # Healthcare
-    "UNH", "JNJ", "LLY", "ABBV", "MRK", "PFE", "TMO", "ABT", "DHR",
-    "BMY", "AMGN", "GILD", "CVS", "MDT", "ISRG", "REGN", "VRTX", "BSX",
-    # Consumer staples
-    "WMT", "PG", "KO", "PEP", "COST", "PM", "MO", "MDLZ", "CL", "TGT",
-    "KMB", "GIS", "SYY",
-    # Consumer discretionary
-    "HD", "MCD", "NKE", "SBUX", "LOW", "TJX", "BKNG", "TSLA", "F", "GM",
-    # Industrials
-    "GE", "CAT", "RTX", "HON", "UPS", "BA", "DE", "LMT", "UNP", "ETN",
-    "FDX", "MMM", "CSX", "NSC", "EMR",
-    # Energy & Utilities
-    "XOM", "CVX", "COP", "SLB", "EOG", "PSX", "OXY", "MPC", "VLO",
-    "NEE", "SO", "DUK", "AEP", "EXC",
-    # Materials & Real estate
-    "LIN", "SHW", "FCX", "APD", "ECL", "AMT", "PLD", "EQIX", "CCI",
-]
+from sklearn.covariance import ledoit_wolf
+import nonlinshrink as nls
 
 
 def get_returns(tickers: List[str],
@@ -151,119 +103,22 @@ def cov_sample(X: np.ndarray) -> np.ndarray:
 
 def cov_linear_shrink(X: np.ndarray) -> np.ndarray:
     """
-    Ledoit-Wolf linear shrinkage covariance estimator (2004).
-    
-    Parameters
-    ----------
-    X : ndarray of shape (n_samples, n_features)
-        Data matrix. Will be centered internally.
-    
-    Returns
-    -------
-    shrunk_cov : ndarray of shape (n_features, n_features)
-        Shrinkage covariance estimate, positive definite.
+    Ledoit-Wolf linear shrinkage covariance estimator (2004) wrapper from sklearn
     """
-    n, p = X.shape
-    # Center the data
-    X = X - np.mean(X, axis=0)
-    
-    # Sample covariance S = (1/n) X^T X
-    S = (X.T @ X) / n
-    
-    # ---------- Target matrix F (constant correlation model) ----------
-    # Average variance (trace / p)
-    var_mean = np.trace(S) / p
-    # Average off-diagonal covariance
-    if p > 1:
-        off_diag_sum = np.sum(S) - np.trace(S)
-        cov_mean = off_diag_sum / (p * (p - 1))
-    else:
-        cov_mean = 0.0
-    
-    F = np.full((p, p), cov_mean)
-    np.fill_diagonal(F, var_mean)
-    
-    # ---------- Compute pi, rho, gamma ----------
-    pi = 0.0
-    rho = 0.0
-    for k in range(n):
-        xk = X[k, :]                     # shape (p,)
-        dev = np.outer(xk, xk) - S       # xk xk^T - S
-        pi += np.sum(dev ** 2)           # Frobenius norm squared
-        # Δ = F - S
-        delta = F - S
-        rho += np.sum(dev * delta)       # Frobenius inner product
-    pi = pi / n
-    rho = rho / n
-    gamma = np.sum((F - S) ** 2)
-    
-    # ---------- Shrinkage intensity ----------
-    if gamma == 0.0:
-        alpha = 0.0
-    else:
-        kappa = (pi - rho) / gamma
-        alpha = max(0.0, min(1.0, kappa / n))
-    
-    # ---------- Shrunk covariance ----------
-    shrunk_cov = (1 - alpha) * S + alpha * F
+    X = np.asarray(X)
+    if X.ndim != 2:
+        raise ValueError("X must be a 2D array.")
+    # ledoit_wolf automatically centers the data
+    shrunk_cov, _ = ledoit_wolf(X, assume_centered=False)
     return shrunk_cov
 
 
 def cov_nonlinear_shrink(X: np.ndarray) -> np.ndarray:
-    """
-    Analytical non-linear shrinkage of Ledoit & Wolf (2020).
+    """Wrapper for the nonlinshrink package"""
 
-    Each sample eigenvalue λ_i is mapped to a non-linear function of the
-    full empirical eigenvalue distribution (kernel-density based), which
-    corrects the over-dispersion that plagues the sample covariance.
-
-    Faithful Python port of the authors' MATLAB analytical_shrinkage.m.
-    O(N^2) memory; fine up to N ~ a few hundred.
-    """
-    X = X - X.mean(axis=0)
-    T, N = X.shape
-    S = (X.T @ X) / T
-    S = (S + S.T) / 2.0
-
-    eigvals, eigvecs = np.linalg.eigh(S)            # ascending
-    n_pos = min(N, T)
-    lam = eigvals[N - n_pos:]
-    u_pos = eigvecs[:, N - n_pos:]
-
-    h = T ** (-1.0 / 3.0)
-    L = np.tile(lam.reshape(-1, 1), (1, n_pos))
-    H = h * L.T
-    x = (L - L.T) / H
-
-    inside = np.maximum(1.0 - x ** 2 / 5.0, 0.0)
-    ftilde = (3.0 / (4.0 * np.sqrt(5))) * np.mean(inside / H, axis=1)
-
-    eps = 1e-15
-    log_arg = np.abs((np.sqrt(5) - x) / (np.sqrt(5) + x + eps))
-    H_kernel = (-3.0 / (10.0 * np.pi)) * x \
-        + (3.0 / (4.0 * np.sqrt(5) * np.pi)) * (1.0 - x ** 2 / 5.0) \
-        * np.log(log_arg + eps)
-    bnd = np.abs(np.abs(x) - np.sqrt(5)) < 1e-10
-    H_kernel[bnd] = (-3.0 / (10.0 * np.pi)) * x[bnd]
-    Hftilde = np.mean(H_kernel / H, axis=1)
-
-    if N <= T:
-        c = N / T
-        d = lam / ((np.pi * c * lam * ftilde) ** 2 +
-                   (1.0 - c - np.pi * c * lam * Hftilde) ** 2)
-        sigma = u_pos @ np.diag(d) @ u_pos.T
-    else:
-        Hf0 = (1.0 / np.pi) * (
-            3.0 / (10.0 * h ** 2) +
-            (3.0 / (4.0 * np.sqrt(5) * h)) * (1.0 - 1.0 / (5.0 * h ** 2))
-            * np.log((1.0 + np.sqrt(5) * h) / (1.0 - np.sqrt(5) * h))
-        ) * np.mean(1.0 / lam)
-        d0 = 1.0 / (np.pi * (N - T) / T * Hf0)
-        d1 = lam / (np.pi ** 2 * lam ** 2 * (ftilde ** 2 + Hftilde ** 2))
-        d_full = np.concatenate([np.full(N - T, d0), d1])
-        sigma = eigvecs @ np.diag(d_full) @ eigvecs.T
-
-    return _ensure_pd(sigma)
+    # The package automatically demeans the data by default
+    # 'k' is an optional parameter to specify effective degrees of freedom already subtracted
+    return nls.shrink_cov(X, k=0)
 
 
 def cov_poet(X: np.ndarray,
@@ -309,93 +164,180 @@ def cov_poet(X: np.ndarray,
     return _ensure_pd(common + R_thresh)
 
 
-# ---- adaptive POET --------------------------------------------------------
+def _poet_from_eig(eigvals_desc: np.ndarray,
+                   eigvecs_desc: np.ndarray,
+                   S: np.ndarray,
+                   T: int,
+                   K: int,
+                   C: float) -> np.ndarray:
+    """Build a POET estimate from a precomputed eigendecomposition of S."""
+    N = S.shape[0]
+    U_K = eigvecs_desc[:, :K]
+    common = (U_K * eigvals_desc[:K]) @ U_K.T
+    R = S - common
+    diag_R = np.maximum(np.diag(R), 1e-12)
+    theta = np.outer(np.sqrt(diag_R), np.sqrt(diag_R))
+    tau = C * theta * np.sqrt(np.log(N) / T)
+    R_thresh = np.sign(R) * np.maximum(np.abs(R) - tau, 0.0)
+    np.fill_diagonal(R_thresh, np.diag(R))
+    return _ensure_pd(common + R_thresh)
 
-class AdaptivePOET:
+
+def cov_poet_cv(X: np.ndarray,
+                K_max: int = 8,
+                C_grid: Tuple[float, ...] = (0.25, 0.5, 0.75, 1.0, 1.5, 2),
+                train_frac: float = 0.7) -> np.ndarray:
     """
-    Cross-validated POET that picks (K, C) jointly to minimise the realised
-    variance of the implied minimum-variance portfolio on a held-out slice
-    of the in-sample window.
+    POET with K selected analytically (eigenvalue-ratio test) and
+    threshold constant C selected by time-series cross-validation.
 
-    Why minimum-variance loss?  Frobenius-to-validation-sample-cov is too
-    noisy when the validation slice is short.  The implied MVP variance is
-    a more discriminating loss because it weights the parts of Σ that
-    actually matter for inversion (Engle, Ledoit & Wolf 2019).
-
-    Performance optimisation
-    ------------------------
-    The grid is K x C.  Varying K does not change the eigenvectors of S_tr
-    -- only how many we keep -- and varying C does not change the residual
-    R = S - common_K -- only the threshold applied to it.  We therefore
-    compute the training eigendecomposition exactly ONCE per call and
-    reuse it across the entire grid.  This makes AdaptivePOET ~ 30x
-    faster on N = 500 universes.
-
-    The estimator is callable like the others (X -> cov) and exposes a
-    `history` list of (K*, C*) selections for diagnostic plotting.
+    The training slice [0:T1] is used to fix K via the Ahn-Horenstein
+    ratio test and to build candidate POET matrices across C_grid.  The
+    validation slice [T1:T] picks C* by minimising the out-of-sample
+    variance of the implied minimum-variance portfolio.  The final
+    estimate uses the full window with K re-derived analytically.
     """
+    T, N = X.shape
+    T1 = int(T * train_frac)
+    X_tr, X_va = X[:T1], X[T1:]
 
-    def __init__(self,
-                 K_grid: Tuple[int, ...] = (1, 2, 3, 4, 5, 6, 8, 10),
-                 C_grid: Tuple[float, ...] = (0.25, 0.5, 0.75, 1.0, 1.5),
-                 train_frac: float = 0.7):
-        self.K_grid = K_grid
-        self.C_grid = C_grid
-        self.train_frac = train_frac
-        self.history: List[Dict] = []
+    S_tr = np.cov(X_tr, rowvar=False)
+    evals, evecs = np.linalg.eigh(S_tr)
+    evals = evals[::-1]
+    evecs = evecs[:, ::-1]
 
-    @staticmethod
-    def _build_poet(eigvals_desc: np.ndarray,
-                    eigvecs_desc: np.ndarray,
-                    S: np.ndarray,
-                    T: int,
-                    K: int,
-                    C: float) -> np.ndarray:
-        """Build a POET cov from a precomputed eigendecomposition of S."""
-        N = S.shape[0]
-        U_K = eigvecs_desc[:, :K]
-        common = (U_K * eigvals_desc[:K]) @ U_K.T
-        R = S - common
-        diag_R = np.maximum(np.diag(R), 1e-12)
-        theta = np.outer(np.sqrt(diag_R), np.sqrt(diag_R))
-        tau = C * theta * np.sqrt(np.log(N) / T)
-        R_thresh = np.sign(R) * np.maximum(np.abs(R) - tau, 0.0)
-        np.fill_diagonal(R_thresh, np.diag(R))
-        return _ensure_pd(common + R_thresh)
+    Kmax = max(1, min(K_max, N - 1))
+    ratios = evals[:Kmax] / np.maximum(evals[1:Kmax + 1], 1e-12)
+    K = int(np.argmax(ratios) + 1)
+    K = max(1, min(K, Kmax))
 
-    def __call__(self, X: np.ndarray) -> np.ndarray:
-        T, N = X.shape
-        T1 = int(T * self.train_frac)
-        X_tr, X_va = X[:T1], X[T1:]
+    ones = np.ones(N)
+    best_C, best_loss = C_grid[0], np.inf
+    for C in C_grid:
+        try:
+            Sigma = _poet_from_eig(evals, evecs, S_tr, T1, K, C)
+            inv = np.linalg.inv(Sigma + 1e-8 * np.eye(N))
+            w = inv @ ones / (ones @ inv @ ones)
+            val_var = float(np.var(X_va @ w))
+            if np.isfinite(val_var) and val_var < best_loss:
+                best_loss, best_C = val_var, C
+        except Exception:
+            continue
 
-        # one eigendecomposition for the training window
-        S_tr = np.cov(X_tr, rowvar=False)
-        evals, evecs = np.linalg.eigh(S_tr)
-        evals = evals[::-1]
-        evecs = evecs[:, ::-1]
-        Kmax = min(max(self.K_grid), N - 1)
+    return cov_poet(X, K=None, K_max=K_max, threshold_C=best_C)
 
-        ones = np.ones(N)
-        best = (np.inf, self.K_grid[0], self.C_grid[0])
-        for K in self.K_grid:
-            if K > Kmax:
-                continue
-            for C in self.C_grid:
-                try:
-                    Sigma = self._build_poet(evals, evecs, S_tr,
-                                             T1, K, C)
-                    inv = np.linalg.inv(Sigma + 1e-8 * np.eye(N))
-                    w = inv @ ones / (ones @ inv @ ones)
-                    val_var = float(np.var(X_va @ w))
-                    if np.isfinite(val_var) and val_var < best[0]:
-                        best = (val_var, K, C)
-                except Exception:
-                    continue
+def _hard_threshold(matrix, tau):
+    """Keep the tau largest absolute entries, set others to zero."""
+    if tau <= 0 or tau >= matrix.size:
+        return matrix.copy() if tau >= matrix.size else np.zeros_like(matrix)
+    flat_abs = np.abs(matrix.ravel())
+    # Find the tau-th largest absolute value (quickselect via partition)
+    thresh = np.partition(flat_abs, -tau)[-tau]
+    return np.where(np.abs(matrix) >= thresh, matrix, 0.0)
 
-        _, K_star, C_star = best
-        self.history.append({"K": K_star, "C": C_star})
-        # final fit uses the full window, recomputed from scratch
-        return cov_poet(X, K=K_star, threshold_C=C_star)
+
+def _poetry_core(X, r, tau, T=10, eta=0.5, reg=1e-8):
+    """
+    Core POETRY estimator.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n_samples, d)
+        Training data.
+    r : int
+        Rank of low‑rank component.
+    tau : int
+        Number of largest entries to keep in sparse component.
+    T : int
+        Number of refinement iterations.
+    eta : float
+        Step size for scaled gradient descent (0.25 to 0.5 advised).
+    reg : float
+        Regularization for (B^T B) to avoid ill‑conditioning.
+
+    Returns
+    -------
+    Sigma : ndarray of shape (d, d)
+        Estimated covariance matrix.
+    L : ndarray
+        Low‑rank component.
+    Psi : ndarray
+        Sparse component.
+    """
+    n, d = X.shape
+    S = (X.T @ X) / n
+
+    # ---------- Initialisation: POET ----------
+    U, s, _ = np.linalg.svd(S, full_matrices=False)
+    B = U[:, :r] @ np.diag(np.sqrt(s[:r]))
+    O = S - B @ B.T
+    Psi = _hard_threshold(O, tau)
+
+    # ---------- Iterative refinement ----------
+    for _ in range(T):
+        # 1. Residual
+        Res = B @ B.T + Psi - S
+
+        # 2. Gradient w.r.t B: 2 * Res * B
+        grad_B = 2.0 * Res @ B
+
+        # 3. Scaled gradient descent with regularised inverse
+        BtB = B.T @ B
+        inv_BtB = np.linalg.inv(BtB + reg * np.eye(r))
+        B = B - eta * grad_B @ inv_BtB
+
+        # 4. Update sparse component
+        new_residual = S - B @ B.T
+        Psi = _hard_threshold(new_residual, tau)
+
+    L = B @ B.T
+    Sigma = L + Psi
+    return Sigma, L, Psi
+
+def estimate_factor_number(S, r_max=None):
+    d = S.shape[0]
+    if r_max is None:
+        r_max = min(10, d // 2)
+    eigvals = np.linalg.eigvalsh(S)[::-1]
+    eigvals = np.maximum(eigvals, 1e-12)
+    ratios = [eigvals[i-1] / eigvals[i] for i in range(1, min(r_max, len(eigvals)-1))]
+    return np.argmax(ratios) + 1
+
+def poetry_auto_covariance_estimation(X, tau_list=None, n_folds=4, r_max=None,
+                                      T=200, eta=0.25, reg=1e-6, heuristic_tau_factor=0.02):
+    n, d = X.shape
+    S = (X.T @ X) / n
+
+    # Analytical r
+    r_est = estimate_factor_number(S, r_max)
+
+    # Selection of tau
+    if tau_list is not None:
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
+        best_tau, best_score = None, np.inf
+        for tau in tau_list:
+            scores = []
+            for train_idx, val_idx in kf.split(X):
+                X_train, X_val = X[train_idx], X[val_idx]
+                Sigma_tr, _, _ = _poetry_core(X_train, r_est, tau, T, eta, reg)
+                S_val = (X_val.T @ X_val) / len(val_idx)
+                scores.append(np.linalg.norm(Sigma_tr - S_val, ord='fro'))
+            mean_err = np.mean(scores)
+            if mean_err < best_score:
+                best_score, best_tau = mean_err, tau
+        tau_est = best_tau
+    else:
+        # Heuristic from paper: tau ~ 0.02 * d^2
+        tau_est = int(heuristic_tau_factor * d * d)
+
+    Sigma, _, _ = _poetry_core(X, r_est, tau_est, T, eta, reg)
+    return Sigma, r_est, tau_est
+
+
+def cov_poetry(X: np.ndarray) -> np.ndarray:
+    """POETRY covariance wrapper: auto-selects r and tau, returns Sigma only."""
+    Sigma, _, _ = poetry_auto_covariance_estimation(X)
+    return _ensure_pd(Sigma)
 
 
 def _ensure_pd(M: np.ndarray, jitter: float = 1e-10) -> np.ndarray:
@@ -514,12 +456,100 @@ def min_var_unconstrained(cov: np.ndarray, ridge: float = 1e-6) -> np.ndarray:
     return w / w.sum() if w.sum() > 0 else x0
 
 
-def risk_parity_weights(cov: np.ndarray) -> np.ndarray:
-    """Naive risk parity:  w_i ∝ 1 / σ_i ."""
-    sigma = np.sqrt(np.diag(cov))
-    sigma = np.maximum(sigma, 1e-12)
-    w = 1.0 / sigma
-    return w / w.sum()
+# =============================================================================
+# 3c. MHRP: Exponentially weighted covariance + equal-vol allocation + targeting
+# =============================================================================
+
+def cov_ewma(returns: np.ndarray, lambda_: float = 0.94) -> np.ndarray:
+    """EWMA covariance (RiskMetrics). Lower lambda_ = faster decay."""
+    T, N = returns.shape
+    if lambda_ <= 0 or lambda_ >= 1:
+        raise ValueError("lambda_ must be in (0,1)")
+    weights = np.array([(1 - lambda_) * lambda_**(T - 1 - i) for i in range(T)])
+    weights = weights / weights.sum()
+    demeaned = returns - returns.mean(axis=0)
+    cov = demeaned.T @ (weights[:, None] * demeaned)
+    return _ensure_pd(cov)
+
+
+def _equal_vol_weights_from_cov(cov: np.ndarray, items: List[int]) -> np.ndarray:
+    """Inverse-volatility weights for a subset of assets."""
+    vols = np.sqrt(np.diag(cov)[items])
+    inv_vol = 1.0 / np.maximum(vols, 1e-12)
+    return inv_vol / inv_vol.sum()
+
+
+def _cluster_vol_equal(cov: np.ndarray, items: List[int]) -> float:
+    """Portfolio variance of a cluster under equal-volatility weights."""
+    w = _equal_vol_weights_from_cov(cov, items)
+    sub_cov = cov[np.ix_(items, items)]
+    return float(w @ sub_cov @ w)
+
+
+def _raw_returns(X: np.ndarray) -> np.ndarray:
+    """
+    Identity passthrough used as cov_fn for MHRP strategies.
+
+    The backtest engine calls cov_fn(window) then alloc_fn(cov).  MHRP
+    needs the raw return matrix, not a pre-computed covariance, so we pass
+    the window straight through here and let mhrp_weights do its own
+    EWMA covariance estimation internally.
+    """
+    return X
+
+
+def mhrp_weights(returns: np.ndarray,
+                 lambda_ewma: float = 0.94,
+                 shrinkage_func: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+                 target_vol: float = 0.15,
+                 linkage_method: str = "single") -> np.ndarray:
+    """
+    Modified HRP (Molyboga 2020): EWMA covariance, equal-volatility cluster
+    allocation, and volatility targeting.
+
+    Steps:
+      1. EWMA covariance (optionally followed by a shrinkage pass).
+      2. Hierarchical clustering on correlation distance.
+      3. Recursive bisection with inverse-volatility weights per cluster.
+      4. Scale final weights so ex-ante annualised vol = target_vol.
+
+    The returned weights may sum to less than 1 (the remainder is cash
+    earning rf=0 in the backtest engine).  This is the conventional MHRP
+    convention; do not re-normalise before passing to the engine.
+    """
+    T, N = returns.shape
+
+    cov_ew = cov_ewma(returns, lambda_=lambda_ewma)
+    cov = shrinkage_func(cov_ew) if shrinkage_func is not None else cov_ew
+
+    corr = _cov_to_corr(cov)
+    dist = np.sqrt(np.clip(0.5 * (1.0 - corr), 0.0, None))
+    np.fill_diagonal(dist, 0.0)
+    link = linkage(squareform(dist, checks=False), method=linkage_method)
+    sort_ix = list(leaves_list(link))
+
+    w = np.ones(N)
+    clusters: List[List[int]] = [sort_ix]
+    while clusters:
+        clusters = [c[i:j]
+                    for c in clusters
+                    for i, j in [(0, len(c) // 2), (len(c) // 2, len(c))]
+                    if len(c) > 1]
+        for i in range(0, len(clusters), 2):
+            c0, c1 = clusters[i], clusters[i + 1]
+            v0 = _cluster_vol_equal(cov, c0)
+            v1 = _cluster_vol_equal(cov, c1)
+            alpha = 1.0 - v0 / (v0 + v1)
+            w[c0] *= alpha
+            w[c1] *= 1.0 - alpha
+
+    port_var = float(w @ cov @ w)
+    ann_vol_forecast = np.sqrt(port_var * 252)
+    if ann_vol_forecast > 1e-12:
+        w = w * (target_vol / ann_vol_forecast)
+    else:
+        w = np.zeros_like(w)
+    return w
 
 
 # =============================================================================
@@ -533,28 +563,26 @@ StrategyMap = Dict[str, Tuple[Callable[[np.ndarray], np.ndarray],
 
 def make_default_strategies(linkage_method: str = "single") -> StrategyMap:
     """
-    The 9 default strategies for the main experiment.
+    The default strategies for the main experiment.
 
     Five HRP variants spanning the covariance estimators we want to compare,
-    plus four out-of-family benchmarks.  AdaptivePOET is instantiated fresh
-    so its `history` list does not leak across calls.
+    three MHRP variants (EWMA + equal-vol + vol-targeting), plus EW benchmark.
     """
-    apoet = AdaptivePOET()
-
     def hrp_with(cov_fn):
         return cov_fn, lambda c: hrp_weights(c, linkage_method=linkage_method)
 
+    def mhrp_with(shrinkage_fn=None):
+        return (_raw_returns,
+                lambda X: mhrp_weights(X, shrinkage_func=shrinkage_fn,
+                                       linkage_method=linkage_method))
+
     return {
-        "HRP-Sample":      hrp_with(cov_sample),
-        "HRP-LW":          hrp_with(cov_linear_shrink),
-        "HRP-NLS":         hrp_with(cov_nonlinear_shrink),
-        "HRP-POET":        hrp_with(cov_poet),
-        "HRP-PoetCV":      hrp_with(apoet),       # adaptive POET
-        "EW":              (cov_sample, equal_weights),
-        "MinVar-Sample":   (cov_sample, min_var_weights),
-        "MinVar-NLS":      (cov_nonlinear_shrink, min_var_weights),
-        "RP-Sample":       (cov_sample, risk_parity_weights),
-    }, apoet
+        "HRP-Sample":  hrp_with(cov_sample),
+        "HRP-LW":      hrp_with(cov_linear_shrink),
+        "HRP-NLS":     hrp_with(cov_nonlinear_shrink),
+        "HRP-POET":    hrp_with(cov_poet_cv),
+        "EW":          (cov_sample, equal_weights),
+    }
 
 
 def backtest(returns: pd.DataFrame,
@@ -637,34 +665,32 @@ def backtest(returns: pd.DataFrame,
 # Point-in-time backtest with time-varying universe (CRSP S&P 500)
 # ---------------------------------------------------------------------------
 
-def make_crsp_strategies(linkage_method: str = "single") -> Tuple[StrategyMap, "AdaptivePOET"]:
+def make_crsp_strategies(linkage_method: str = "single") -> StrategyMap:
     """
     Strategy set for the high-dimensional CRSP runs.
 
     Differences vs make_default_strategies:
-      * MinVar uses the closed-form ridge variant, because long-only SLSQP
-        on N = 500 is too slow and the sample covariance is singular at
-        N > T anyway.
-      * MinVar-Sample is dropped: it requires inverting a singular matrix
-        in the N > T case and is conceptually not defensible there.
-        We keep MinVar-LW and MinVar-NLS (both regularised).
+      * HRP-POET uses POET-CV (cross-validated threshold) rather than
+        analytic-only POET, because N > T makes CV selection more stable.
+      * Three MHRP variants use _raw_returns as cov_fn so the backtest
+        engine feeds the raw return window directly to mhrp_weights, which
+        runs its own EWMA covariance internally.
     """
-    apoet = AdaptivePOET()
-
     def hrp_with(cov_fn):
         return cov_fn, lambda c: hrp_weights(c, linkage_method=linkage_method)
 
+    def mhrp_with(shrinkage_fn=None):
+        return (_raw_returns,
+                lambda X: mhrp_weights(X, shrinkage_func=shrinkage_fn,
+                                       linkage_method=linkage_method))
+
     return {
-        "HRP-Sample":   hrp_with(cov_sample),
-        "HRP-LW":       hrp_with(cov_linear_shrink),
-        "HRP-NLS":      hrp_with(cov_nonlinear_shrink),
-        "HRP-POET":     hrp_with(cov_poet),
-        "HRP-PoetCV":   hrp_with(apoet),
-        "EW":           (cov_sample, equal_weights),
-        "MinVar-LW":    (cov_linear_shrink, min_var_unconstrained),
-        "MinVar-NLS":   (cov_nonlinear_shrink, min_var_unconstrained),
-        "RP-Sample":    (cov_sample, risk_parity_weights),
-    }, apoet
+        "HRP-Sample":  hrp_with(cov_sample),
+        "HRP-LW":      hrp_with(cov_linear_shrink),
+        "HRP-NLS":     hrp_with(cov_nonlinear_shrink),
+        "HRP-POET":    hrp_with(cov_poet_cv),
+        "EW":          (cov_sample, equal_weights),
+    }
 
 
 def backtest_pit(returns_wide: pd.DataFrame,
@@ -1021,27 +1047,23 @@ def _dispersed_eig_cov(N: int, alpha: float = 0.7, seed: int = 0) -> np.ndarray:
     return (Q * lam) @ Q.T
 
 
+
 def simulate_returns(T: int, N: int,
                      regime: str = "factor_sparse",
                      seed: int = 0
                      ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generate synthetic returns from one of two theoretically distinct regimes.
+    Generate synthetic returns from one of several theoretically distinct regimes.
 
     Regimes
     -------
-    'factor_sparse'   - low-rank common (3 factors, eigenvalues 5/3/1.5) plus
-                        a banded (truly sparse) idiosyncratic residual.  The
-                        DGP POET was designed for: clear factor gap and
-                        sparse residual.  POET expected to dominate, NLS
-                        competitive, LW worst because its identity target
-                        misses the factor structure.
-    'dispersed_eigs'  - dense covariance with a power-law eigenvalue
-                        spectrum (no factor gap, no sparsity).  Designed
-                        to showcase NLS: every eigenvalue needs a different
-                        amount of shrinkage, which NLS does and LW does
-                        not.  NLS expected to dominate LW; POET no
-                        special advantage.
+    'factor_sparse'   : low-rank common + banded sparse residual.
+                        POET expected to dominate, NLS competitive, LW worst.
+    'dispersed_eigs'  : dense covariance with power-law eigenvalue spectrum.
+                        NLS dominates LW; POET no advantage.
+    'clustered_eigs'  : two eigenvalue clusters (few large, many small).
+                        NLS should dominate LW; clean, stable DGP.
+    'weak_factor'     : weak factors + sparse residual.  Robustness check.
 
     Returns
     -------
@@ -1058,7 +1080,7 @@ def simulate_returns(T: int, N: int,
         Sigma_idio = _banded_cov(N, diag_var=0.4, bandwidth=2, decay=0.4)
         Sigma_true = common + Sigma_idio
     elif regime == "dispersed_eigs":
-        Sigma_true = _dispersed_eig_cov(N, alpha=0.7, seed=seed + 1)
+        Sigma_true = _dispersed_eig_cov(N, alpha=0.7, seed=seed+1)
     else:
         raise ValueError(f"unknown regime {regime!r}; "
                          f"expected one of factor_sparse, dispersed_eigs")
@@ -1068,19 +1090,6 @@ def simulate_returns(T: int, N: int,
     Z = rng.standard_normal((T, N))
     X = Z @ L_chol.T
     return X, Sigma_true
-
-
-# Backwards-compat wrapper so older callers do not break.
-def simulate_factor_returns(T: int, N: int, K_true: int = 3,
-                            structure: str = "sharp",
-                            seed: int = 0
-                            ) -> Tuple[np.ndarray, np.ndarray]:
-    """Deprecated.  Calls simulate_returns with a regime mapping."""
-    mapping = {"sharp": "factor_sparse",
-               "medium": "factor_sparse",
-               "diffuse": "dispersed_eigs"}
-    regime = mapping.get(structure, "factor_sparse")
-    return simulate_returns(T, N, regime=regime, seed=seed)
 
 
 def evaluate_sigma(Sigma_hat: np.ndarray,
@@ -1099,13 +1108,12 @@ def evaluate_sigma(Sigma_hat: np.ndarray,
 
 
 def run_simulation_study(T: int = 300, N: int = 200,
-                         regimes: Tuple[str, ...] = ("factor_sparse",
-                                                      "dispersed_eigs"),
+                         regimes: Tuple[str, ...] = ("factor_sparse", "dispersed_eigs"),
                          n_reps: int = 50,
                          seed0: int = 0,
                          **kwargs) -> pd.DataFrame:
     """
-    Sweep cov estimators over the two theoretical regimes.
+    Sweep cov estimators over multiple theoretical regimes.
 
     Defaults: T=300, N=200 -> N/T ≈ 0.67, the moderate high-dim regime
     where NLS / POET advantages over LW are visible.
@@ -1253,8 +1261,7 @@ def plot_simulation_results(sim_df: pd.DataFrame, outdir: str) -> None:
                 float(np.quantile(means, 0.025)),
                 float(np.quantile(means, 0.975)))
 
-    regimes = ["factor_sparse", "dispersed_eigs"]
-    regimes = [r for r in regimes if r in sim_df["regime"].unique()]
+    regimes = [r for r in sim_df["regime"].unique()]
     palette = {"Sample": "#7f7f7f", "LW": "#1f77b4",
                "NLS": "#2ca02c",   "POET": "#d62728"}
 

@@ -487,46 +487,36 @@ for portfolio management._ Journal of Financial Data Science, 2(3).
 Politis, D. N., & Romano, J. P. (1994). _The stationary bootstrap._
 JASA, 89(428).
 
-0. Introduction - give the idea that its interesing direction to see if even without error amplification shrinakge gets better results in portfolio allocation
-1. Lit review
-- Summarize all papers used through and conclude that no simillar test has been carried
-2. Methodology
-- Explain HRP
-- Explain Sample Cov, LW, NLS, POET
-- Explain DGPs
-- Explain Data
-3. Proposal - adaPOET and empirical findings
-4. Results 
-- Run cov simulation study to motivate idea - run_simulation.py
-- Replicate sample vs LW HRP paper - run_crsp.py
-- Start using LW HRP as basis to comapre to NLS,POET, adaPOET HRP - run_robustness.py
-- Explore residual result of adaPOET of how markets behave in terms of factors over different regimes and events
-5. Conclussion
-- Summarize results of my experiments and propose future research directions like 
+# current idea:
 
-new idea:
-0. Introduction - give the idea that its interesing direction to see if even without error amplification shrinakge gets better results in portfolio allocation
-1. Lit review
-- Summarize all papers used through and conclude that no simillar test has been carried
-2. Methodology
-- Explain HRP
-- Explain Sample Cov, LS, NLS, DCC-GJR-Garch (Engel 2002), DCC-GJR-Garch NLS (Engle, LW 2019)
-- Explain DGPs
-- Explain Data
+(1-2 pages) 0. Introduction - give the idea that its interesing direction to see if even without error amplification shrinakge gets better results in portfolio allocation
+(2-3 pages)
 
-3. Replication
-   - Run cov simulation study to motivate idea - run_simulation.py
-     -Sample vs LS/DCC-GJR-Garch
-     -LS vs NLS
-     -NLS vs DCC-GJR-Garch NLS
+1. Lit review
+
+- Summarize all papers used through and conclude that no simillar test has been carried
+
+2. Methodology
+
+Portfolio Theory:
+- Explain Sample Cov and Porfolio construction with mean-variance (GMV portfolio directly comparable) and 1/N portfolio as benchmarks (1 page)
+- Explain HRP (1 page)
+- Explain LW, NLS, POET (2 pages)
+- Explain MHRP (1 page) - introduce the EWA shrinkage
+
+Data:
+- Explain DGPs (1 page) - 2 regimes: sparse factor creation, and spiked non linear dense eigenvalues
+- Explain Data (1 page) - point in time SP500 equities (maybe restricted to top 100 for easier computation)
+
 4. Results
 
-- Replicate sample vs LW HRP paper - run_crsp.py
-- Start using LW HRP as basis to comapre to DCC-GJR-Garch NLS - run_robustness.py
-- Run a robustness test over different realizations
-- Run a transaction cost test to see if there are tangible improvments
+- Run cov simulation study to motivate covarinace improvement idea Sample vs All, then LW vs NLS, POET - run_simulation.py (2 pages) (done with results)
+- Sample vs LW, NLS, POET HRP - run_crsp.py (2 pages) (result seems to be the alpha doesnt come from shrinkage only, done with results, only 0 bps linear cost)
+- Replicate    
+- Start using LW MHRP as basis to comapre to NLS, POET MHRP overall and with transaction costs - run_robustness.py
+- Innovate on MHRP with advanced methods like DCC-GARCH or else
+- Run a transaction cost stress test for best performing NLS or POET tests to see if alpha get preserved vs LW or Sample (does this have a point)
 
 5. Conclussion
 
 - Summarize results of my experiments and propose future research directions like
-
