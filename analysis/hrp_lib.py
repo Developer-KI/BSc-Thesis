@@ -33,7 +33,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import yfinance as yf
 
 from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import squareform
@@ -43,53 +42,6 @@ from sklearn.model_selection import KFold
 
 from sklearn.covariance import ledoit_wolf
 import nonlinshrink as nls
-
-
-def get_returns(tickers: List[str],
-                start: str = "2015-01-01",
-                end: str = "2025-01-01",
-                min_obs_ratio: float = 0.95) -> pd.DataFrame:
-    """
-    Download adjusted-close prices via yfinance, filter, return log-returns.
-
-    Drops tickers with fewer than `min_obs_ratio` of observations, then drops
-    rows containing any remaining NaN, producing a balanced panel.
-    """
-    print(f"[data] Downloading {len(tickers)} tickers from {start} to {end} ...")
-    data = yf.download(tickers, start=start, end=end,
-                       progress=False, auto_adjust=True)
-    prices = data["Close"] if isinstance(data.columns, pd.MultiIndex) else data
-    keep = prices.columns[prices.notna().mean() >= min_obs_ratio]
-    prices = prices[keep].dropna()
-    if prices.shape[1] < 5:
-        raise RuntimeError("Too few tickers with sufficient history.")
-    log_returns = np.log(prices / prices.shift(1)).dropna()
-    print(f"[data] Final panel: {log_returns.shape[0]} days x "
-          f"{log_returns.shape[1]} assets   "
-          f"(N/T at 504 lookback = {log_returns.shape[1]/504:.2f})")
-    return log_returns
-
-
-def get_riskfree(returns_index: pd.DatetimeIndex) -> pd.Series:
-    """
-    Daily risk-free rate from the 13-week T-bill yield (^IRX).
-
-    ^IRX is quoted in percent (e.g. 5.0 means 5 %).  We convert to a daily
-    decimal rate using the simple 252-day approximation, forward-filling
-    weekends/holidays.  Returns 0.0 if download fails.
-    """
-    try:
-        rf = yf.download("^IRX", start=returns_index[0] - pd.Timedelta(days=10),
-                         end=returns_index[-1] + pd.Timedelta(days=2),
-                         progress=False, auto_adjust=True)
-        rf = rf["Close"] if isinstance(rf.columns, pd.MultiIndex) else rf
-        rf = rf.squeeze()
-        rf_daily = (rf / 100.0) / 252.0
-        rf_daily = rf_daily.reindex(returns_index, method="ffill").fillna(0.0)
-        return rf_daily
-    except Exception as e:
-        print(f"[data] WARN: ^IRX download failed ({e}); using rf=0.")
-        return pd.Series(0.0, index=returns_index)
 
 
 # =============================================================================
@@ -396,6 +348,40 @@ def equal_weights(cov: np.ndarray) -> np.ndarray:
     return np.ones(n) / n
 
 
+def make_spyk_allocator(cap_wide: pd.DataFrame) -> Callable:
+    """
+    Market-cap weighted portfolio of the current top-K universe (SPYK benchmark).
+
+    Returns a context-aware allocator (._context_aware = True) that receives
+    the PERMNO array and rebalance date from backtest_pit and looks up the
+    point-in-time market caps to form value-weighted portfolio weights.
+    Falls back to equal-weight if cap data is unavailable.
+    """
+    def alloc_fn(data: np.ndarray, *,
+                 permnos: np.ndarray, date: pd.Timestamp) -> np.ndarray:
+        n = len(permnos)
+        ew = np.ones(n) / n
+        try:
+            if date in cap_wide.index:
+                row = cap_wide.loc[date]
+            else:
+                idx = cap_wide.index.searchsorted(date, side="right") - 1
+                if idx < 0:
+                    return ew
+                row = cap_wide.iloc[idx]
+        except Exception:
+            return ew
+        caps = row.reindex(permnos.tolist()).values.astype(float)
+        caps = np.where(np.isnan(caps), 0.0, caps)
+        total = caps.sum()
+        if total <= 0:
+            return ew
+        return caps / total
+
+    alloc_fn._context_aware = True
+    return alloc_fn
+
+
 def min_var_weights(cov: np.ndarray) -> np.ndarray:
     """
     Long-only minimum-variance portfolio via SLSQP.
@@ -404,43 +390,6 @@ def min_var_weights(cov: np.ndarray) -> np.ndarray:
     """
     n = cov.shape[0]
     cov_pd = _ensure_pd(cov)
-    obj = lambda w: w @ cov_pd @ w
-    grad = lambda w: 2.0 * cov_pd @ w
-    cons = [{"type": "eq", "fun": lambda w: w.sum() - 1.0,
-             "jac": lambda w: np.ones(n)}]
-    bnds = [(0.0, 1.0)] * n
-    x0 = np.ones(n) / n
-    res = minimize(obj, x0, jac=grad, method="SLSQP",
-                   bounds=bnds, constraints=cons,
-                   options={"maxiter": 200, "ftol": 1e-10})
-    if not res.success:
-        return x0
-    w = np.maximum(res.x, 0.0)
-    return w / w.sum() if w.sum() > 0 else x0
-
-
-def min_var_unconstrained(cov: np.ndarray, ridge: float = 1e-6) -> np.ndarray:
-    """
-    Long-only minimum-variance portfolio.
-
-    Despite the function name (kept for backwards-compatibility with earlier
-    drafts of this code), this solves the LONG-ONLY minimum-variance QP:
-
-        min  w' Σ w     s.t.   sum(w) = 1,   w_i >= 0
-
-    via SLSQP.  We never want a closed-form Σ⁻¹𝟙 / 𝟙'Σ⁻¹𝟙 in this thesis
-    because (a) it allows negative weights, and (b) at N > T the sample
-    covariance is singular and "Σ + λI" introduces an arbitrary ridge.
-    Long-only is the natural action space for HRP, so MinVar gets the
-    same constraint for an apples-to-apples comparison.
-
-    The `ridge` argument is retained as a small jitter on the diagonal to
-    keep the optimiser numerically stable; it does not bias the solution
-    materially because the regularised estimators (LW, NLS, POET) already
-    produce well-conditioned Σ.
-    """
-    n = cov.shape[0]
-    cov_pd = _ensure_pd(cov + ridge * np.eye(n))
     obj = lambda w: w @ cov_pd @ w
     grad = lambda w: 2.0 * cov_pd @ w
     cons = [{"type": "eq", "fun": lambda w: w.sum() - 1.0,
@@ -561,30 +510,6 @@ StrategyMap = Dict[str, Tuple[Callable[[np.ndarray], np.ndarray],
                               Callable[[np.ndarray], np.ndarray]]]
 
 
-def make_default_strategies(linkage_method: str = "single") -> StrategyMap:
-    """
-    The default strategies for the main experiment.
-
-    Five HRP variants spanning the covariance estimators we want to compare,
-    three MHRP variants (EWMA + equal-vol + vol-targeting), plus EW benchmark.
-    """
-    def hrp_with(cov_fn):
-        return cov_fn, lambda c: hrp_weights(c, linkage_method=linkage_method)
-
-    def mhrp_with(shrinkage_fn=None):
-        return (_raw_returns,
-                lambda X: mhrp_weights(X, shrinkage_func=shrinkage_fn,
-                                       linkage_method=linkage_method))
-
-    return {
-        "HRP-Sample":  hrp_with(cov_sample),
-        "HRP-LW":      hrp_with(cov_linear_shrink),
-        "HRP-NLS":     hrp_with(cov_nonlinear_shrink),
-        "HRP-POET":    hrp_with(cov_poet_cv),
-        "EW":          (cov_sample, equal_weights),
-    }
-
-
 def backtest(returns: pd.DataFrame,
              strategies: StrategyMap,
              lookback: int = 504,
@@ -665,7 +590,9 @@ def backtest(returns: pd.DataFrame,
 # Point-in-time backtest with time-varying universe (CRSP S&P 500)
 # ---------------------------------------------------------------------------
 
-def make_crsp_strategies(linkage_method: str = "single") -> StrategyMap:
+def make_crsp_strategies(linkage_method: str = "single",
+                         market_cap_wide: Optional[pd.DataFrame] = None,
+                         ) -> StrategyMap:
     """
     Strategy set for the high-dimensional CRSP runs.
 
@@ -675,6 +602,8 @@ def make_crsp_strategies(linkage_method: str = "single") -> StrategyMap:
       * Three MHRP variants use _raw_returns as cov_fn so the backtest
         engine feeds the raw return window directly to mhrp_weights, which
         runs its own EWMA covariance internally.
+      * When market_cap_wide is provided, SPYK (market-cap weighted top-K)
+        is added as a benchmark alongside EW.
     """
     def hrp_with(cov_fn):
         return cov_fn, lambda c: hrp_weights(c, linkage_method=linkage_method)
@@ -684,13 +613,16 @@ def make_crsp_strategies(linkage_method: str = "single") -> StrategyMap:
                 lambda X: mhrp_weights(X, shrinkage_func=shrinkage_fn,
                                        linkage_method=linkage_method))
 
-    return {
+    strategies: StrategyMap = {
         "HRP-Sample":  hrp_with(cov_sample),
         "HRP-LW":      hrp_with(cov_linear_shrink),
         "HRP-NLS":     hrp_with(cov_nonlinear_shrink),
         "HRP-POET":    hrp_with(cov_poet_cv),
         "EW":          (cov_sample, equal_weights),
     }
+    if market_cap_wide is not None:
+        strategies["SPYK"] = (cov_sample, make_spyk_allocator(market_cap_wide))
+    return strategies
 
 
 def backtest_pit(returns_wide: pd.DataFrame,
@@ -780,9 +712,14 @@ def backtest_pit(returns_wide: pd.DataFrame,
                                "in_panel": cand.size, "with_history": N_t})
 
         for name, (cov_fn, alloc_fn) in strategies.items():
+            context_aware = getattr(alloc_fn, "_context_aware", False)
             try:
                 cov = cov_fn(window_clean)
-                w_target = alloc_fn(cov)
+                if context_aware:
+                    w_target = alloc_fn(cov, permnos=permnos[keep],
+                                        date=rebal_date)
+                else:
+                    w_target = alloc_fn(cov)
             except Exception as e:
                 print(f"[bt-pit] WARN {name} t={rebal_date}: {e}; "
                       f"falling back to 1/N_t")

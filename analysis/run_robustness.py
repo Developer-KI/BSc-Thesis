@@ -46,8 +46,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-import analysis.hrp_lib as L
-import analysis.crsp_data as C
+import hrp_lib as L
+import crsp_data as C
 
 
 # -----------------------------------------------------------------------------

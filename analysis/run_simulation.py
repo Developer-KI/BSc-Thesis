@@ -42,7 +42,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import wilcoxon
 
-import analysis.hrp_lib as L
+import hrp_lib as L
 
 
 # -----------------------------------------------------------------------------

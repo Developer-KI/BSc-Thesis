@@ -41,8 +41,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-import analysis.hrp_lib as L
-import analysis.crsp_data as C
+import hrp_lib as L
+import crsp_data as C
 
 
 # -----------------------------------------------------------------------------
@@ -69,7 +69,7 @@ REBALANCE = 21
 
 # Portfolio frinction
 RISK_FREE = 0.0
-COST_BPS = 5.0
+COST_BPS = 0.0
 
 
 # -----------------------------------------------------------------------------
@@ -97,14 +97,16 @@ def run_one_lookback(returns_wide: pd.DataFrame,
                      min_history: int,
                      rebalance: int,
                      cost_bps: float,
-                     outdir: str,) -> pd.DataFrame:
+                     outdir: str,
+                     market_cap_wide=None) -> pd.DataFrame:
     print("\n" + "=" * 72)
     print(f" CRSP S&P 500  -  lookback = {lookback} (N/T ~ {TOP_K/lookback:.2f})")
     print("=" * 72)
     os.makedirs(outdir, exist_ok=True)
 
     rf = riskfree_proxy(returns_wide.index)
-    strategies = L.make_crsp_strategies(linkage_method="single")
+    strategies = L.make_crsp_strategies(linkage_method="single",
+                                        market_cap_wide=market_cap_wide)
 
 
 
@@ -223,13 +225,17 @@ def main(argv: List[str] = None) -> None:
         market_cap_csv=args.data if args.top_k else None,
         top_k=args.top_k
     )
+    cap_wide = universe_fn._cap_wide  # already loaded; None when top_k=0
+
     # 3. sweep lookbacks
     summary_pieces = []
     for lb in lookbacks:
         outdir = f"{args.out}/crsp_lb{lb}"
         df = run_one_lookback(returns_wide, universe_fn,
                               lookback=lb, rebalance=args.rebalance,
-                              cost_bps=args.cost_bps, outdir=outdir, min_history=max(lookbacks))
+                              cost_bps=args.cost_bps, outdir=outdir,
+                              min_history=max(lookbacks),
+                              market_cap_wide=cap_wide)
         summary_pieces.append(df)
 
     summary_long = pd.concat(summary_pieces, ignore_index=True)

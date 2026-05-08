@@ -499,20 +499,22 @@ JASA, 89(428).
 2. Methodology
 
 Portfolio Theory:
+
 - Explain Sample Cov and Porfolio construction with mean-variance (GMV portfolio directly comparable) and 1/N portfolio as benchmarks (1 page)
 - Explain HRP (1 page)
 - Explain LW, NLS, POET (2 pages)
 - Explain MHRP (1 page) - introduce the EWA shrinkage
 
 Data:
+
 - Explain DGPs (1 page) - 2 regimes: sparse factor creation, and spiked non linear dense eigenvalues
-- Explain Data (1 page) - point in time SP500 equities (maybe restricted to top 100 for easier computation)
+- Explain Data (1 page) - point in time SP500 equities (maybe restricted to top 100 for easier computation and delistings are handled as 0 return)
 
 4. Results
 
 - Run cov simulation study to motivate covarinace improvement idea Sample vs All, then LW vs NLS, POET - run_simulation.py (2 pages) (done with results)
 - Sample vs LW, NLS, POET HRP - run_crsp.py (2 pages) (result seems to be the alpha doesnt come from shrinkage only, done with results, only 0 bps linear cost)
-- Replicate    
+- Replicate
 - Start using LW MHRP as basis to comapre to NLS, POET MHRP overall and with transaction costs - run_robustness.py
 - Innovate on MHRP with advanced methods like DCC-GARCH or else
 - Run a transaction cost stress test for best performing NLS or POET tests to see if alpha get preserved vs LW or Sample (does this have a point)
