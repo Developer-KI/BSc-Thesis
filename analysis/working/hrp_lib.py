@@ -741,10 +741,10 @@ def backtest_pit(returns_wide: pd.DataFrame,
     if min_history_days is None:
         min_history_days = lookback   # require full lookback by default
 
-    rebal_idx = list(range(lookback, T_total, rebalance))
+    rebal_idx = list(range(min_history_days, T_total, rebalance))
     if verbose:
-        print(f"[bt-pit] lookback={lookback}, rebal={rebalance}, "
-              f"cost={cost_bps}bps, rebalances={len(rebal_idx)}")
+        print(f"[bt-pit] lookback={lookback}, min_history={min_history_days}, "
+              f"rebal={rebalance}, cost={cost_bps}bps, rebalances={len(rebal_idx)}")
 
     daily_pnl = {n: np.full(T_total, np.nan) for n in strategies}
     weights_log: Dict[str, Dict[pd.Timestamp, pd.Series]] = \

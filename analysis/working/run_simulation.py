@@ -53,13 +53,13 @@ import hrp_lib as L
 DEFAULT_N = 100
 
 # T/N ratios to sweep 
-DEFAULT_T_N_RATIOS = "1.26, 2.52, 5.04"
+DEFAULT_T_N_RATIOS = "0.63, 1.26, 2.52, 5.04"
 
 # Data-generating regimes
 REGIMES = ["dispersed_eigs", "factor_sparse"]
 
 # Number of replications per cell
-N_REPS = 300
+N_REPS = 50
 
 # -----------------------------------------------------------------------------
 # Helper: run one cell (regime, N/T) for all replications

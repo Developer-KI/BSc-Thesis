@@ -64,11 +64,12 @@ END_DATE = "2025-01-01"
 TOP_K = 100
 
 # Lookbacks to sweep: 0.25y, 0.5y, 1y, 2y
-LOOKBACKS = (21, 63, 126, 252, 504)
+LOOKBACKS = (63, 126, 252, 504)
 REBALANCE = 21
 
+# Portfolio frinction
 RISK_FREE = 0.0
-COST_BPS = 0.0
+COST_BPS = 5.0
 
 
 # -----------------------------------------------------------------------------
@@ -93,9 +94,10 @@ def riskfree_proxy(dates: pd.DatetimeIndex) -> pd.Series:
 def run_one_lookback(returns_wide: pd.DataFrame,
                      universe_fn: C.UniverseFn,
                      lookback: int,
+                     min_history: int,
                      rebalance: int,
                      cost_bps: float,
-                     outdir: str) -> pd.DataFrame:
+                     outdir: str,) -> pd.DataFrame:
     print("\n" + "=" * 72)
     print(f" CRSP S&P 500  -  lookback = {lookback} (N/T ~ {TOP_K/lookback:.2f})")
     print("=" * 72)
@@ -104,9 +106,11 @@ def run_one_lookback(returns_wide: pd.DataFrame,
     rf = riskfree_proxy(returns_wide.index)
     strategies = L.make_crsp_strategies(linkage_method="single")
 
+
+
     daily, weights = L.backtest_pit(returns_wide, universe_fn, strategies,
                                     lookback=lookback, rebalance=rebalance,
-                                    cost_bps=cost_bps, rf_daily=rf)
+                                    cost_bps=cost_bps, rf_daily=rf, min_history_days=min_history)
 
     daily.to_csv(f"{outdir}/daily_excess_returns.csv")
 
@@ -225,7 +229,7 @@ def main(argv: List[str] = None) -> None:
         outdir = f"{args.out}/crsp_lb{lb}"
         df = run_one_lookback(returns_wide, universe_fn,
                               lookback=lb, rebalance=args.rebalance,
-                              cost_bps=args.cost_bps, outdir=outdir)
+                              cost_bps=args.cost_bps, outdir=outdir, min_history=max(lookbacks))
         summary_pieces.append(df)
 
     summary_long = pd.concat(summary_pieces, ignore_index=True)
