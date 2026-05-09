@@ -34,7 +34,6 @@ A combined cross-lookback summary is written to results/crsp_summary.csv.
 from __future__ import annotations
 import argparse
 import os
-import sys
 from typing import List
 
 import numpy as np
@@ -63,13 +62,13 @@ START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
 TOP_K = 100
 
-# Lookbacks to sweep: 0.25y, 0.5y, 1y, 2y
+# Lookbacks to sweep: 1m, 3m, 6m, 1y, 2y
 LOOKBACKS = (63, 126, 252, 504)
 REBALANCE = 21
 
 # Portfolio frinction
 RISK_FREE = 0.0
-COST_BPS = 0.0
+COST_BPS = 2.0
 
 
 # -----------------------------------------------------------------------------
@@ -121,12 +120,12 @@ def run_one_lookback(returns_wide: pd.DataFrame,
     print(metrics.round(4).to_string())
     metrics.to_csv(f"{outdir}/metrics.csv")
 
-    # Tests vs HRP-Sample
-    print("\n=== Tests vs HRP-Sample ===")
-    base = daily["HRP-Sample"]
+    # Tests vs EW (1/N baseline)
+    print("\n=== Tests vs EW (1/N) ===")
+    base = daily["EW"]
     rows = []
     for s in daily.columns:
-        if s == "HRP-Sample":
+        if s == "EW":
             continue
         dm_stat, dm_p = L.diebold_mariano(daily[s], base, h=21)
         lw_diff, lw_p = L.lw_sharpe_test(daily[s], base, n_boot=2000, block=21)

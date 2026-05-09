@@ -512,10 +512,10 @@ Data:
 
 4. Results
 
-- Run cov simulation study to motivate covarinace improvement idea Sample vs All, then LW vs NLS, POET - run_simulation.py (2 pages) (done with results)
-- Sample vs LW, NLS, POET HRP wtih 1/N, SPY-K benchmarks - run_crsp.py (2 pages) (result seems to be the alpha doesnt come from shrinkage only, done with results, only 0 bps linear cost)
-- Replicate MHRP
-- Innovate on MHRP with advanced dynamic covariance methods like DCC-GARCH or else
+- Replication: Run cov simulation study to motivate covarinace improvement idea Sample vs All, then LW vs NLS, POET - run_simulation.py (2 pages) (done with results)
+- New empirical result: Run a full robustness test of the alpha based on transaction costs, linkage and lookback (result seems to be the alpha doesnt come from shrinkage only, only linear cost, done with results)
+- Innovate by creating a modification to HRP called HDRP - idea is that cov estimation errors are not amplified, hence we can be sparing when forecasting and innovating on incorporating complexity in the forward looking estimation
+- Sample vs LW, NLS, POET HDRP wtih 1/N, SPY-K benchmarks - run_crsp.py (2 pages)
 - Start using best LW MHRP as basis to comapre to advanced shrinkage NLS, POET MHRP overall and with transaction costs - run_robustness.py
 
 5. Conclussion

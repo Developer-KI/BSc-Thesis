@@ -68,11 +68,13 @@ START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
 
 # Default grid
-DEFAULT_LOOKBACKS = "126,252,504"
-DEFAULT_COSTS = "0,2,5,10"
+DEFAULT_LOOKBACKS = "63, 126, 252, 504"
+DEFAULT_COSTS = "5, 10"
 DEFAULT_LINKAGES = "single,average,ward"
 DEFAULT_REBALANCE = 21
 DEFAULT_TOP_K = 100
+
+RISK_FREE = 0.0
 
 
 # -----------------------------------------------------------------------------
@@ -80,16 +82,13 @@ DEFAULT_TOP_K = 100
 # -----------------------------------------------------------------------------
 
 def filter_strategies(strategies: dict,
-                      keep: List[str],
-                      drop_apoet: bool = False) -> dict:
+                      keep: List[str]) -> dict:
     """
     Trim the strategy dict to the requested subset, always preserving the
-    HRP-Sample baseline (it's the reference for ΔSharpe).
+    EW baseline (it's the reference for ΔSharpe).
     """
     keep_set = set(keep)
-    keep_set.add("HRP-Sample")            # always required
-    if drop_apoet:
-        keep_set.discard("HRP-PoetCV")
+    keep_set.add("EW")            # always required
     return {k: v for k, v in strategies.items() if k in keep_set}
 
 
@@ -104,8 +103,8 @@ def run_grid(returns_wide: pd.DataFrame,
              linkages: List[str],
              rebalance: int,
              strategies_keep: List[str],
-             drop_apoet: bool = False,
              rf_daily: pd.Series = None,
+             market_cap_wide=None
              ) -> pd.DataFrame:
     rows = []
     total = len(lookbacks) * len(costs) * len(linkages)
@@ -122,9 +121,8 @@ def run_grid(returns_wide: pd.DataFrame,
                       f"linkage={lnk}")
                 print("-" * 72)
 
-                strategies = L.make_crsp_strategies(linkage_method=lnk)
-                strategies = filter_strategies(strategies, strategies_keep,
-                                               drop_apoet=drop_apoet)
+                strategies = L.make_crsp_strategies(linkage_method=lnk, market_cap_wide=market_cap_wide)
+                strategies = filter_strategies(strategies, strategies_keep)
                 print(f"  strategies in this cell: {list(strategies.keys())}")
 
                 try:
@@ -135,8 +133,8 @@ def run_grid(returns_wide: pd.DataFrame,
                         verbose=True)
                     metrics = L.compute_metrics_pit(daily, weights)
 
-                    base_sr = metrics.loc["HRP-Sample", "Sharpe"] \
-                        if "HRP-Sample" in metrics.index else np.nan
+                    base_sr = metrics.loc["EW", "Sharpe"] \
+                        if "EW" in metrics.index else np.nan
                     for strat, m in metrics.iterrows():
                         rows.append({
                             "lookback": lb, "cost_bps": cost, "linkage": lnk,
@@ -180,7 +178,7 @@ def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
         return
 
     strategies = sorted(s for s in df["strategy"].unique()
-                        if s != "HRP-Sample")
+                        if s != "EW")
     for strat in strategies:
         sub = df[df["strategy"] == strat]
         try:
@@ -192,8 +190,8 @@ def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
             continue
         fig, ax = plt.subplots(figsize=(6, 4))
         sns.heatmap(pivot, annot=True, fmt=".3f", cmap="RdBu_r",
-                    center=0, ax=ax, cbar_kws={"label": "ΔSharpe vs HRP-Sample"})
-        ax.set_title(f"{strat}: Sharpe − HRP-Sample\n"
+                    center=0, ax=ax, cbar_kws={"label": "ΔSharpe vs EW"})
+        ax.set_title(f"{strat}: Sharpe − EW\n"
                      f"averaged over linkage methods")
         ax.set_xlabel("cost_bps")
         ax.set_ylabel("lookback")
@@ -246,8 +244,7 @@ def main(argv=None) -> None:
     p.add_argument("--linkages", default=DEFAULT_LINKAGES,
                    help="comma-separated, e.g. single,average,ward")
     p.add_argument("--strategies",
-                   default="HRP-Sample,HRP-LW,HRP-NLS,HRP-POET,HRP-POETRY,"
-                           "MHRP,MHRP-LW,MHRP-NLS,EW",
+                   default="HRP-Sample,HRP-LW,HRP-NLS,HRP-POET,EW,SPY-K, HMVA",
                    help="comma-separated strategy names to include")
     p.add_argument("--out", default="results/crsp_robustness")
     args = p.parse_args(argv)
@@ -268,8 +265,7 @@ def main(argv=None) -> None:
     print(f"  rebalance  : {args.rebalance}")
     print(f"  linkages   : {linkages}  (averaged in heatmaps)")
     print(f"  top_k      : {args.top_k}")
-    print(f"  strategies : {strategies_keep}"
-          f"{'  (no-apoet)' if args.no_apoet else ''}")
+    print(f"  strategies : {strategies_keep}")
     print(f"  total cells: {len(lookbacks) * len(costs) * len(linkages)}")
 
     # -- 1.  Load CRSP returns ONCE -------------------------------------
@@ -299,7 +295,10 @@ def main(argv=None) -> None:
     )
 
     # rf = 0 for the CRSP run (see run_crsp.py for justification)
-    rf_daily = pd.Series(0.0, index=returns_wide.index)
+    daily_rate = (1 + RISK_FREE)**(1/365) - 1
+    rf_daily = pd.Series(daily_rate, index=returns_wide.index)
+
+    cap_wide = universe_fn._cap_wide
 
     # -- 2.  Run the sweep ----------------------------------------------
     df = run_grid(
@@ -309,8 +308,8 @@ def main(argv=None) -> None:
         linkages=linkages,
         rebalance=args.rebalance,
         strategies_keep=strategies_keep,
-        drop_apoet=False,
         rf_daily=rf_daily,
+        market_cap_wide=cap_wide
     )
 
     long_path = f"{args.out}/robustness_long.csv"

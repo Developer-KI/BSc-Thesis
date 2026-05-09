@@ -23,6 +23,7 @@ Author: Bachelor's thesis code, 2026.
 
 from __future__ import annotations
 
+import heapq
 import os
 import warnings
 warnings.filterwarnings("ignore")
@@ -34,6 +35,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from itertools import combinations
 from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import squareform
 from scipy.stats import norm
@@ -315,6 +317,14 @@ def _cluster_var(cov: np.ndarray, items: List[int]) -> float:
     w = inv_var / inv_var.sum()
     return float(w @ sub @ w)
 
+def _cluster_sharpe(cov: np.ndarray, mu: np.ndarray, items: List[int]) -> float:
+    sub = cov[np.ix_(items, items)]
+    inv_var = 1.0 / np.diag(sub)
+    w = inv_var / inv_var.sum()
+    ret = float(w @ mu[items])
+    vol = float(np.sqrt(w @ sub @ w))
+    return ret / vol if vol > 0 else 0.0
+
 
 def hrp_weights(cov: np.ndarray,
                 linkage_method: str = "single") -> np.ndarray:
@@ -337,6 +347,80 @@ def hrp_weights(cov: np.ndarray,
             c0, c1 = clusters[i], clusters[i + 1]
             v0, v1 = _cluster_var(cov, c0), _cluster_var(cov, c1)
             alpha = 1.0 - v0 / (v0 + v1)
+            w[c0] *= alpha
+            w[c1] *= 1.0 - alpha
+    return w
+
+def mu_black_litterman(
+    window: np.ndarray,
+    cov: np.ndarray,
+    delta: float = 2.5,
+    tau: float = 0.05,
+    w_mkt: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Black-Litterman posterior expected returns via PyPortfolioOpt.
+
+    Prior:  π = δ Σ w_mkt  (equal-weight market proxy when w_mkt is None).
+    Views:  one absolute view per asset, Q = sample mean, Ω = default (∝ τΣ).
+    Falls back to the equilibrium π on any failure.
+    """
+    from pypfopt.black_litterman import BlackLittermanModel
+
+    T, N = window.shape
+    assets = list(range(N))
+    cov_df = pd.DataFrame(cov, index=assets, columns=assets)
+
+    if w_mkt is None:
+        pi_arg: object = "equal"
+        pi_fallback = np.ones(N) / N
+    else:
+        pi_arg = pd.Series(w_mkt, index=assets)
+        pi_fallback = w_mkt
+
+    absolute_views = dict(zip(assets, window.mean(axis=0)))
+
+    try:
+        bl = BlackLittermanModel(
+            cov_matrix=cov_df,
+            pi=pi_arg,
+            absolute_views=absolute_views,
+            risk_aversion=delta,
+            tau=tau,
+        )
+        return bl.bl_returns().to_numpy()
+    except Exception:
+        return delta * cov @ pi_fallback
+
+def custom_hrp_weights(cov: np.ndarray, mu: np.ndarray,
+                linkage_method: str = "single") -> np.ndarray:
+    """MyHRP: vol-adjusted clustering distance + Sharpe-proportional bisection."""
+    N = cov.shape[0]
+    corr = _cov_to_corr(cov)
+    dist = np.sqrt(np.clip(0.5 * (1.0 - corr), 0.0, None))
+
+    #Experiment
+    std = np.power(np.diag(cov), 1/16)
+    vol_scaled_corr = cov / np.outer(std, std)
+    dist = np.clip(0.75 * np.exp(-np.abs(vol_scaled_corr)), 0.0, None)
+
+    np.fill_diagonal(dist, 0.0)
+    link = linkage(squareform(dist, checks=False), method=linkage_method)
+    sort_ix = list(leaves_list(link))
+
+    w = np.ones(N)
+    clusters: List[List[int]] = [sort_ix]
+    while clusters:
+        clusters = [c[i:j]
+                    for c in clusters
+                    for i, j in [(0, len(c) // 2), (len(c) // 2, len(c))]
+                    if len(c) > 1]
+        for i in range(0, len(clusters), 2):
+            c0, c1 = clusters[i], clusters[i + 1]
+            s0 = max(_cluster_sharpe(cov, mu, c0), 0.0)
+            s1 = max(_cluster_sharpe(cov, mu, c1), 0.0)
+            total = s0 + s1
+            alpha = s0 / total if total > 0 else 0.5
             w[c0] *= alpha
             w[c1] *= 1.0 - alpha
     return w
@@ -409,16 +493,79 @@ def min_var_weights(cov: np.ndarray) -> np.ndarray:
 # 3c. MHRP: Exponentially weighted covariance + equal-vol allocation + targeting
 # =============================================================================
 
-def cov_ewma(returns: np.ndarray, lambda_: float = 0.94) -> np.ndarray:
-    """EWMA covariance (RiskMetrics). Lower lambda_ = faster decay."""
+def _ewma_pseudo(returns: np.ndarray, halflife: float) -> np.ndarray:
+    """
+    Rescale rows of *returns* so that pseudo.T @ pseudo / T == cov_ewma(returns, halflife).
+
+    This lets any covariance estimator that internally computes a sample
+    covariance (NLS, LW, POET, …) operate on exponentially front-weighted data
+    without rewriting its internals.  The mapping is:
+
+        pseudo[t] = sqrt(w_t * T) * r_t
+        => pseudo.T @ pseudo / T = Σ_t w_t * r_t r_t' = EWMA cov
+
+    where w_t = (1-λ) λ^{T-1-t}, normalised to sum to 1.
+    """
+    if halflife <= 0:
+        raise ValueError("halflife must be positive")
+    T = returns.shape[0]
+    lambda_ = 0.5 ** (1.0 / halflife)
+    exponents = np.arange(T - 1, -1, -1, dtype=float)
+    w = (1.0 - lambda_) * np.power(lambda_, exponents)
+    w /= w.sum()
+    return np.sqrt(w * T)[:, None] * returns
+
+
+def cov_ewma(returns: np.ndarray,
+             halflife: Optional[float] = None,
+             lambda_: float = 0.97,
+             shrink: Optional[str] = None) -> np.ndarray:
+    """
+    Vectorised EWMA covariance (RiskMetrics convention, zero-mean).
+
+    halflife (trading days) overrides lambda_ when supplied:
+        halflife=21  <->  lambda_ ≈ 0.967
+        halflife=11  <->  lambda_ ≈ 0.939  (close to the classic 0.94)
+
+    shrink applies a secondary shrinkage pass to the EWMA matrix:
+        None   – no shrinkage (default)
+        "lw"   – Ledoit-Wolf linear shrinkage toward scaled identity
+        "nls"  – nonlinear eigenvalue shrinkage (Ledoit-Wolf 2020)
+        "poet" – factor + adaptive soft-threshold (Fan-Liao-Mincheva 2013)
+
+    All three shrinkage modes use the pseudo-returns trick: each row is
+    scaled by sqrt(w_t * T) so that their (uncentred) sample covariance
+    equals cov_ewma exactly, letting the existing estimators operate on
+    the correct matrix without reimplementing their internals.
+    """
+    if halflife is not None:
+        if halflife <= 0:
+            raise ValueError("halflife must be positive")
+        lambda_ = 0.5 ** (1.0 / halflife)
+    if not (0 < lambda_ < 1):
+        raise ValueError("lambda_ must be in (0, 1)")
     T, N = returns.shape
-    if lambda_ <= 0 or lambda_ >= 1:
-        raise ValueError("lambda_ must be in (0,1)")
-    weights = np.array([(1 - lambda_) * lambda_**(T - 1 - i) for i in range(T)])
-    weights = weights / weights.sum()
-    demeaned = returns - returns.mean(axis=0)
-    cov = demeaned.T @ (weights[:, None] * demeaned)
-    return _ensure_pd(cov)
+    exponents = np.arange(T - 1, -1, -1)
+    w = (1.0 - lambda_) * np.power(lambda_, exponents)
+    w /= w.sum()
+    cov = returns.T @ (w[:, None] * returns)
+
+    if shrink is None:
+        return _ensure_pd(cov)
+
+    # pseudo[t] = sqrt(w_t * T) * r_t  =>  pseudo.T @ pseudo / T = cov_ewma
+    pseudo = np.sqrt(w * T)[:, None] * returns
+
+    if shrink == "lw":
+        _, alpha = ledoit_wolf(pseudo, assume_centered=True)
+        mu = np.trace(cov) / N
+        return _ensure_pd((1.0 - alpha) * cov + alpha * mu * np.eye(N))
+    elif shrink == "nls":
+        return _ensure_pd(nls.shrink_cov(pseudo, k=0))
+    elif shrink == "poet":
+        return cov_poet_cv(pseudo)
+    else:
+        raise ValueError(f"unknown shrink={shrink!r}; expected None, 'lw', 'nls', or 'poet'")
 
 
 def _equal_vol_weights_from_cov(cov: np.ndarray, items: List[int]) -> np.ndarray:
@@ -435,42 +582,17 @@ def _cluster_vol_equal(cov: np.ndarray, items: List[int]) -> float:
     return float(w @ sub_cov @ w)
 
 
-def _raw_returns(X: np.ndarray) -> np.ndarray:
+def mhrp_weights(cov: np.ndarray, linkage_method: str = "single") -> np.ndarray:
     """
-    Identity passthrough used as cov_fn for MHRP strategies.
+    MHRP allocation step (Molyboga 2020): hierarchical clustering with
+    inverse-volatility weights per cluster (equal-vol bisection).
 
-    The backtest engine calls cov_fn(window) then alloc_fn(cov).  MHRP
-    needs the raw return matrix, not a pre-computed covariance, so we pass
-    the window straight through here and let mhrp_weights do its own
-    EWMA covariance estimation internally.
+    Mirrors hrp_weights but uses per-cluster inverse-vol instead of
+    inverse-variance for the bisection split.  The covariance matrix is
+    supplied externally — use cov_ewma (or any other estimator) as the
+    cov_fn in the strategy tuple.
     """
-    return X
-
-
-def mhrp_weights(returns: np.ndarray,
-                 lambda_ewma: float = 0.94,
-                 shrinkage_func: Optional[Callable[[np.ndarray], np.ndarray]] = None,
-                 target_vol: float = 0.15,
-                 linkage_method: str = "single") -> np.ndarray:
-    """
-    Modified HRP (Molyboga 2020): EWMA covariance, equal-volatility cluster
-    allocation, and volatility targeting.
-
-    Steps:
-      1. EWMA covariance (optionally followed by a shrinkage pass).
-      2. Hierarchical clustering on correlation distance.
-      3. Recursive bisection with inverse-volatility weights per cluster.
-      4. Scale final weights so ex-ante annualised vol = target_vol.
-
-    The returned weights may sum to less than 1 (the remainder is cash
-    earning rf=0 in the backtest engine).  This is the conventional MHRP
-    convention; do not re-normalise before passing to the engine.
-    """
-    T, N = returns.shape
-
-    cov_ew = cov_ewma(returns, lambda_=lambda_ewma)
-    cov = shrinkage_func(cov_ew) if shrinkage_func is not None else cov_ew
-
+    N = cov.shape[0]
     corr = _cov_to_corr(cov)
     dist = np.sqrt(np.clip(0.5 * (1.0 - corr), 0.0, None))
     np.fill_diagonal(dist, 0.0)
@@ -492,13 +614,493 @@ def mhrp_weights(returns: np.ndarray,
             w[c0] *= alpha
             w[c1] *= 1.0 - alpha
 
-    port_var = float(w @ cov @ w)
-    ann_vol_forecast = np.sqrt(port_var * 252)
-    if ann_vol_forecast > 1e-12:
-        w = w * (target_vol / ann_vol_forecast)
-    else:
-        w = np.zeros_like(w)
     return w
+
+
+def my_hrp_strategy(
+    cov_fn: Callable,
+    linkage_method: str = "single",
+    delta: float = 2.5,
+    tau: float = 0.05,
+) -> Tuple[Callable, Callable]:
+    """
+    Factory returning a (cov_fn, alloc_fn) pair for the strategy map.
+
+    The backtest engine only passes the covariance matrix to alloc_fn, so
+    the wrapped cov_fn computes BL mu from the raw window and caches it in
+    a per-strategy dict.  alloc_fn reads from that cache on the same step.
+    """
+    cache: Dict = {}
+
+    def _cov_fn(window: np.ndarray) -> np.ndarray:
+        cov = cov_fn(window)
+        cache["mu"] = mu_black_litterman(window, cov, delta=delta, tau=tau)
+        return cov
+
+    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
+        mu = cache.get("mu", np.zeros(cov.shape[0]))
+        return custom_hrp_weights(cov, mu, linkage_method=linkage_method)
+
+    return _cov_fn, _alloc_fn
+
+
+# =============================================================================
+# 3d. VOL-BALANCED HRP WITH SHARPE BISECTION + BLACK-LITTERMAN RETURNS
+# =============================================================================
+
+def _vb_merge_cost(vol_a: float, vol_b: float,
+                    sw_a: float, sw_b: float,
+                    cross: float, lam: float) -> float:
+    """
+    Scalar merge/split cost used by both top-down and bottom-up builders.
+
+    lam = 1  →  pure vol-balance:  |vol(A) − vol(B)| / (vol(A) + vol(B))
+    lam = 0  →  pure cross-cluster correlation:  ρ(A, B)
+    0 < lam < 1  →  convex blend of both terms.
+
+    ρ(A, B) is the equal-weight inter-cluster correlation:
+        ρ(A, B) = cross(A→B) / sqrt(sw_A × sw_B)
+    where cross(A→B) = Σ_{i∈A, j∈B} Σ_ij  (one-way sum, by symmetry equal to
+    the other direction) and sw_S = Σ_{i,j∈S} Σ_ij = (|S| vol(S))².
+
+    This formula follows directly from
+        Cov(EW_A, EW_B)   = cross / (|A| |B|)
+        Vol(EW_A)         = sqrt(sw_A) / |A|
+        Vol(EW_B)         = sqrt(sw_B) / |B|
+    so ρ = [cross/(|A||B|)] / [sqrt(sw_A)/|A| × sqrt(sw_B)/|B|]
+         = cross / sqrt(sw_A × sw_B).
+    No matrix inversion or eigendecomposition is required.
+    """
+    vol_sum  = vol_a + vol_b
+    vol_bal  = abs(vol_a - vol_b) / vol_sum if vol_sum > 1e-12 else 0.0
+    if lam >= 1.0:
+        return vol_bal
+    denom_rho = float(np.sqrt(max(sw_a * sw_b, 0.0)))
+    rho       = cross / denom_rho if denom_rho > 1e-12 else 0.0
+    return lam * vol_bal + (1.0 - lam) * rho
+
+
+def _vb_split_bruteforce(cov_arr: np.ndarray,
+                          indices: List[int],
+                          lam: float = 1.0) -> Tuple[List[int], List[int]]:
+    """
+    Exhaustive best bipartition for small clusters.
+
+    Enumerates all subsets of size 1..n//2 (exploiting A/B symmetry) and
+    returns the split that minimises _vb_merge_cost(lam).
+    Only called when len(indices) <= bf_threshold.
+    """
+    n = len(indices)
+    if n <= 1:
+        return list(indices), []
+    M = cov_arr[np.ix_(indices, indices)]
+    local = list(range(n))
+    best_score = np.inf
+    best_A, best_B = local[:1], local[1:]
+    for r in range(1, n // 2 + 1):
+        for A_tup in combinations(local, r):
+            A_loc = list(A_tup)
+            B_loc = [i for i in local if i not in set(A_tup)]
+            nA, nB = len(A_loc), len(B_loc)
+            sA    = float(M[np.ix_(A_loc, A_loc)].sum())
+            sB    = float(M[np.ix_(B_loc, B_loc)].sum())
+            cross = float(M[np.ix_(A_loc, B_loc)].sum())
+            vA    = np.sqrt(max(sA / (nA * nA), 0.0))
+            vB    = np.sqrt(max(sB / (nB * nB), 0.0))
+            score = _vb_merge_cost(vA, vB, sA, sB, cross, lam)
+            if score < best_score:
+                best_score = score
+                best_A, best_B = A_loc, B_loc
+    return [indices[i] for i in best_A], [indices[i] for i in best_B]
+
+
+def _vb_split_heuristic(cov_arr: np.ndarray,
+                         indices: List[int],
+                         lam: float = 1.0) -> Tuple[List[int], List[int]]:
+    """
+    O(n²) heuristic split via 2-D prefix sums.
+
+    Sort order and objective both depend on lam:
+
+    lam = 1 (pure vol-balance):
+        Sort by individual asset vol.  Objective: |vol_L − vol_R|.
+        Contiguous cuts in vol-sorted order capture the natural clustering
+        of assets by risk level and are optimal for this criterion.
+
+    lam < 1 (correlation-aware blend):
+        Sort by within-cluster row-sum  rowsum_i = Σ_j Σ_ij  (restricted to
+        the current cluster).  This measures how much asset i co-moves with
+        the rest of the cluster — its within-cluster systematic risk.
+        Objective: lam * vol_balance + (1-lam) * ρ(A,B), where ρ is the
+        equal-weight inter-cluster correlation computed from the same prefix
+        sum P.  All n−1 cuts are evaluated in O(n) after the O(n²) matrix
+        extraction:
+
+            sum(M[:k, :k])   =  P[k-1, k-1]             ← within-left  sum
+            sum(M[k:,  k:])  =  total − P[n-1,k-1]
+                                       − P[k-1,n-1] + P[k-1,k-1]  ← within-right
+            cross(left→right)=  P[k-1, n-1] − P[k-1, k-1]        ← one-way cross
+            ρ(k)             =  cross / sqrt(s_left × s_right)
+
+    Row-sum sort is also a good proxy for vol-sort (high-beta assets are
+    typically high-vol), so it performs nearly as well for the vol-balance
+    term while being strictly better for the cross-correlation term.
+    """
+    n = len(indices)
+    if n <= 1:
+        return list(indices), []
+
+    # Extract submatrix once; derive sort key from it (no second cov lookup)
+    M_raw = cov_arr[np.ix_(indices, indices)]
+    if lam >= 1.0:
+        sort_key = np.sqrt(np.maximum(np.diag(M_raw), 0.0))  # individual vol
+    else:
+        sort_key = M_raw.sum(axis=1)                          # within-cluster rowsum
+
+    order      = np.argsort(sort_key)
+    sorted_idx = [indices[int(i)] for i in order]
+    M          = M_raw[np.ix_(order, order)]                  # rearrange in-place
+
+    P     = M.cumsum(axis=0).cumsum(axis=1)
+    total = float(P[-1, -1])
+    ks    = np.arange(1, n)
+    s_left  = P[ks - 1, ks - 1]
+    s_right = total - P[-1, ks - 1] - P[ks - 1, -1] + s_left
+    n_l, n_r = ks.astype(float), (n - ks).astype(float)
+    v_l  = np.sqrt(np.maximum(s_left  / (n_l * n_l), 0.0))
+    v_r  = np.sqrt(np.maximum(s_right / (n_r * n_r), 0.0))
+
+    if lam >= 1.0:
+        objective = np.abs(v_l - v_r)
+    else:
+        vol_bal   = np.abs(v_l - v_r) / np.maximum(v_l + v_r, 1e-12)
+        cross     = P[ks - 1, -1] - P[ks - 1, ks - 1]          # one-way cross sum
+        denom_rho = np.sqrt(np.maximum(s_left * s_right, 0.0))
+        rho       = np.where(denom_rho > 1e-12, cross / denom_rho, 0.0)
+        objective = lam * vol_bal + (1.0 - lam) * rho
+
+    k = int(np.argmin(objective)) + 1
+    return sorted_idx[:k], sorted_idx[k:]
+
+
+def _build_vb_tree(cov_arr: np.ndarray, n: int,
+                   bf_threshold: int = 10,
+                   lam: float = 1.0) -> dict:
+    """BFS top-down construction of the vol-balanced binary tree."""
+    root: dict = {"indices": list(range(n))}
+    queue = [root]
+    while queue:
+        node = queue.pop(0)
+        idx = node["indices"]
+        if len(idx) <= 1:
+            node["left"] = node["right"] = None
+            continue
+        if len(idx) <= bf_threshold:
+            left_idx, right_idx = _vb_split_bruteforce(cov_arr, idx, lam=lam)
+        else:
+            left_idx, right_idx = _vb_split_heuristic(cov_arr, idx, lam=lam)
+        node["left"]  = {"indices": left_idx}
+        node["right"] = {"indices": right_idx}
+        queue.append(node["left"])
+        queue.append(node["right"])
+    return root
+
+
+def _build_vb_tree_bottomup(cov_arr: np.ndarray, n: int,
+                              lam: float = 1.0) -> dict:
+    """
+    Bottom-up agglomerative construction of the vol-balanced binary tree.
+
+    Merge criterion controlled by lam via _vb_merge_cost:
+        lam = 1  →  merge pairs with smallest |vol(A) − vol(B)| (vol-balance only)
+        lam = 0  →  merge pairs with smallest ρ(A, B), the equal-weight
+                    inter-cluster correlation.  For singletons this equals the
+                    standard pairwise correlation, so lam=0 is equivalent to
+                    average-linkage hierarchical clustering on the correlation
+                    matrix — the same starting point as classic HRP, but now
+                    used bottom-up rather than as an external dendrogram.
+        0 < lam < 1  →  blend: merge clusters that are both vol-similar AND
+                    weakly correlated with each other.
+
+    Implementation: lazy-deletion min-heap, O(N² log N).  The cross-sum
+    cross(A,B) = Σ_{i∈A,j∈B} Σ_ij is already needed to update sw after each
+    merge; for lam < 1 it is also used to compute ρ at no extra lookup cost.
+    """
+    idx_of = {i: [i]                                        for i in range(n)}
+    sw     = {i: float(cov_arr[i, i])                      for i in range(n)}
+    sz     = {i: 1                                          for i in range(n)}
+    vol_c  = {i: float(np.sqrt(max(cov_arr[i, i], 0.0)))   for i in range(n)}
+    nodes  = {i: {"indices": [i], "left": None, "right": None} for i in range(n)}
+    active: set = set(range(n))
+    next_id = n
+
+    heap: List = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            cross_ij = float(cov_arr[i, j])
+            cost = _vb_merge_cost(vol_c[i], vol_c[j], sw[i], sw[j], cross_ij, lam)
+            heapq.heappush(heap, (cost, i, j))
+
+    while len(active) > 1:
+        while heap:
+            _, a, b = heapq.heappop(heap)
+            if a in active and b in active:
+                break
+        else:
+            break
+
+        cross   = float(cov_arr[np.ix_(idx_of[a], idx_of[b])].sum())
+        new_sw  = sw[a] + sw[b] + 2.0 * cross
+        new_sz  = sz[a] + sz[b]
+        new_vol = float(np.sqrt(max(new_sw / (new_sz * new_sz), 0.0)))
+        new_idx = idx_of[a] + idx_of[b]
+
+        nid = next_id
+        next_id += 1
+        idx_of[nid] = new_idx
+        sw[nid]     = new_sw
+        sz[nid]     = new_sz
+        vol_c[nid]  = new_vol
+        nodes[nid]  = {"indices": new_idx, "left": nodes[a], "right": nodes[b]}
+
+        active.discard(a)
+        active.discard(b)
+        active.add(nid)
+
+        for k in active:
+            if k != nid:
+                cross_k = float(cov_arr[np.ix_(new_idx, idx_of[k])].sum())
+                cost_k  = _vb_merge_cost(new_vol, vol_c[k], new_sw, sw[k],
+                                          cross_k, lam)
+                heapq.heappush(heap, (cost_k, nid, k))
+
+    return nodes[next_id - 1]
+
+
+def _vb_bisect_sharpe(node: dict, pw: float,
+                       cov_arr: np.ndarray, mu_arr: np.ndarray,
+                       rf: float) -> Dict[int, float]:
+    """Allocate weight pw between subtrees proportional to non-negative cluster Sharpe."""
+    if node is None or not node["indices"]:
+        return {}
+    idx = node["indices"]
+    if len(idx) == 1:
+        return {idx[0]: pw}
+    left, right = node.get("left"), node.get("right")
+    if left is None or right is None:
+        return {i: pw / len(idx) for i in idx}
+
+    def _sharpe(items: List[int]) -> float:
+        n = len(items)
+        sub = cov_arr[np.ix_(items, items)]
+        sigma = float(np.sqrt(max(float(sub.sum()) / (n * n), 0.0)))
+        mu = float(mu_arr[items].mean())
+        return max((mu - rf) / sigma, 0.0) if sigma > 1e-12 else 0.0
+
+    sl, sr = _sharpe(left["indices"]), _sharpe(right["indices"])
+    tot = sl + sr
+    alpha = sl / tot if tot > 1e-12 else 0.5
+    return {
+        **_vb_bisect_sharpe(left,  pw * alpha,       cov_arr, mu_arr, rf),
+        **_vb_bisect_sharpe(right, pw * (1 - alpha), cov_arr, mu_arr, rf),
+    }
+
+
+def _erc_newton_step(w: np.ndarray, cov: np.ndarray,
+                      gamma: float = 0.5) -> np.ndarray:
+    """
+    One Newton step in log-weight space toward equal risk contribution (ERC).
+
+    Fractional risk contributions RC_i = w_i (Σw)_i / (w'Σw) sum to 1.
+    The log-space update
+
+        log(w_new_i) = log(w_i) − γ (RC_i − 1/N)
+
+    moves each asset's RC toward the equal target 1/N without fully collapsing
+    to pure ERC.  γ = 0 leaves weights unchanged; γ = 1 is an aggressive push
+    that may overshoot for highly concentrated starting allocations.
+    γ ∈ [0.3, 0.5] gives a soft regularisation that preserves the Sharpe-
+    proportional structure while reducing risk concentration.
+    """
+    cov_w    = cov @ w
+    port_var = float(w @ cov_w)
+    if port_var < 1e-12:
+        return w
+    rc     = w * cov_w / port_var          # fractional RC, sums to 1
+    target = 1.0 / len(w)
+    log_w  = np.log(np.maximum(w, 1e-12))
+    log_w -= gamma * (rc - target)
+    log_w -= log_w.max()                   # shift for numerical stability
+    w_new  = np.exp(log_w)
+    s      = w_new.sum()
+    return w_new / s if s > 1e-12 else w
+
+
+def vol_hrp_bl_weights(cov: np.ndarray,
+                        mu: np.ndarray,
+                        rf: float = 0.0,
+                        bf_threshold: int = 10,
+                        cov_shrinkage: Optional[str] = None,
+                        tree_method: str = "topdown",
+                        erc_gamma: float = 0.0,
+                        lam: float = 1.0,
+                        turnover_penalty: float = 0.0,
+                        weight_reg: float = 0.0,
+                        w_prev: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Volatility-balanced HRP with Sharpe-ratio bisection and optional secondary
+    covariance shrinkage and/or risk-contribution equalisation.
+
+    Parameters
+    ----------
+    cov : (N, N) annualised covariance matrix.
+    mu  : (N,) expected annual returns (e.g. Black-Litterman posterior).
+    rf  : annual risk-free rate, same scale as mu.
+    bf_threshold : cluster size at/below which exhaustive split search is used
+        (only relevant when tree_method="topdown").
+    cov_shrinkage : optional secondary shrinkage applied to cov before tree
+        construction.  None | "lw" | "nls" | "poet"
+    tree_method : "topdown"  — greedy recursive splitting (default, fast).
+                  "bottomup" — agglomerative merging by min vol-difference
+                               (O(N² log N), globally more coherent hierarchy).
+    erc_gamma : if > 0, apply one Newton step in log-weight space toward equal
+        risk contribution after bisection.  γ ∈ [0.3, 0.5] gives soft
+        regularisation; γ = 0 (default) leaves bisection weights unchanged.
+    lam : blend between vol-balance and cross-cluster correlation objectives.
+        1.0 (default) — pure vol-balance, sort by individual vol.
+        0.0           — minimise inter-cluster correlation ρ(A,B), sort by
+                        within-cluster row-sum.
+        (0, 1)        — convex blend; lam=0.5 weights both objectives equally.
+        See _vb_merge_cost and _vb_split_heuristic for the formula.
+    turnover_penalty : L1 penalty strength on weight changes vs w_prev.
+        Applied as a proximal soft-threshold step: deviations from w_prev
+        smaller than this value are zeroed, larger ones are shrunk by it.
+        Has no effect when w_prev is None.  Typical range: 0.01–0.05.
+    weight_reg : L2 regularisation strength that blends weights toward
+        the equal-weight portfolio.  weight_reg=0 (default) is pure HRP;
+        weight_reg=1 collapses to 1/N.  Typical range: 0.05–0.3.
+    w_prev : previous target weights (N,) for the L1 turnover penalty.
+        Pass None (default) to skip the turnover penalty.
+    """
+    N = cov.shape[0]
+    cov_pd = _ensure_pd(cov)
+
+    if cov_shrinkage is not None:
+        try:
+            L = np.linalg.cholesky(cov_pd)
+            n_pseudo = max(5 * N, 500)
+            Z = np.random.default_rng(42).standard_normal((n_pseudo, N))
+            pseudo = Z @ L.T
+            if cov_shrinkage == "lw":
+                _, alpha = ledoit_wolf(pseudo, assume_centered=True)
+                mu_var = float(np.trace(cov_pd)) / N
+                cov_pd = _ensure_pd(
+                    (1.0 - alpha) * cov_pd + alpha * mu_var * np.eye(N))
+            elif cov_shrinkage == "nls":
+                cov_pd = _ensure_pd(nls.shrink_cov(pseudo, k=0))
+            elif cov_shrinkage == "poet":
+                cov_pd = cov_poet_cv(pseudo)
+            else:
+                raise ValueError(f"cov_shrinkage={cov_shrinkage!r} not recognised")
+        except Exception:
+            pass
+
+    mu_arr = np.asarray(mu, dtype=float)
+    if tree_method == "bottomup":
+        tree = _build_vb_tree_bottomup(cov_pd, N, lam=lam)
+    else:
+        tree = _build_vb_tree(cov_pd, N, bf_threshold, lam=lam)
+
+    w_dict = _vb_bisect_sharpe(tree, 1.0, cov_pd, mu_arr, rf)
+    w = np.zeros(N)
+    for i, wt in w_dict.items():
+        w[i] = wt
+    s = w.sum()
+    w = w / s if s > 1e-12 else np.ones(N) / N
+
+    if erc_gamma > 0.0:
+        w = _erc_newton_step(w, cov_pd, gamma=erc_gamma)
+
+    # L2 weight regularisation: convex blend toward equal weights
+    if weight_reg > 0.0:
+        w = (1.0 - weight_reg) * w + weight_reg / N
+        s = w.sum()
+        w = w / s if s > 1e-12 else np.ones(N) / N
+
+    # L1 turnover penalty: proximal soft-threshold deviations from w_prev
+    if turnover_penalty > 0.0 and w_prev is not None:
+        delta = w - w_prev
+        delta = np.sign(delta) * np.maximum(np.abs(delta) - turnover_penalty, 0.0)
+        w = np.maximum(w_prev + delta, 0.0)
+        s = w.sum()
+        w = w / s if s > 1e-12 else np.ones(N) / N
+
+    return w
+
+
+def vol_hrp_bl_strategy(
+    cov_fn: Callable,
+    rf: float = 0.0,
+    delta: float = 2.5,
+    tau: float = 0.05,
+    bf_threshold: int = 10,
+    cov_shrinkage: Optional[str] = None,
+    tree_method: str = "topdown",
+    erc_gamma: float = 0.0,
+    lam: float = 1.0,
+    ewma_halflife: Optional[float] = None,
+    turnover_penalty: float = 0.0,
+    weight_reg: float = 0.0,
+) -> Tuple[Callable, Callable]:
+    """
+    Factory: (cov_fn, alloc_fn) pair for vol-balanced HRP with BL returns.
+
+    Parameters
+    ----------
+    cov_fn        : base covariance estimator, e.g. cov_sample.
+    rf            : annual risk-free rate passed to vol_hrp_bl_weights.
+    delta, tau    : BL risk-aversion and confidence parameters.
+    bf_threshold  : exhaustive-search threshold (topdown only).
+    cov_shrinkage : optional secondary shrinkage inside alloc_fn.
+    tree_method   : "topdown" | "bottomup".
+    erc_gamma     : ERC Newton step size (0 = disabled).
+    lam           : vol-balance / correlation blend (see vol_hrp_bl_weights).
+    ewma_halflife : when set (trading days), front-weight observations via the
+        EWMA pseudo-returns trick before calling cov_fn.  This makes recent
+        returns count more without replacing the chosen estimator.  The BL
+        expected-return estimate always uses the raw (uniform) window so that
+        means are not double-discounted.  halflife=21 ≈ 1 month is a typical
+        starting point; use halflife ≈ lookback/4 for a lookback-proportional
+        decay.
+    turnover_penalty : L1 penalty passed to vol_hrp_bl_weights; the closure
+        tracks previous target weights across rebalances automatically.
+    weight_reg    : L2 regularisation (ridge toward equal weights) passed to
+        vol_hrp_bl_weights.
+    """
+    cache: Dict = {}
+    prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
+
+    def _cov_fn(window: np.ndarray) -> np.ndarray:
+        data = _ewma_pseudo(window, ewma_halflife) if ewma_halflife is not None else window
+        cov = cov_fn(data)
+        cache["mu"] = mu_black_litterman(window, cov, delta=delta, tau=tau)
+        return cov
+
+    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
+        mu = cache.get("mu", np.zeros(cov.shape[0]))
+        w = vol_hrp_bl_weights(cov, mu, rf=rf,
+                               bf_threshold=bf_threshold,
+                               cov_shrinkage=cov_shrinkage,
+                               tree_method=tree_method,
+                               erc_gamma=erc_gamma,
+                               lam=lam,
+                               turnover_penalty=turnover_penalty,
+                               weight_reg=weight_reg,
+                               w_prev=prev_w["w"])
+        prev_w["w"] = w
+        return w
+
+    return _cov_fn, _alloc_fn
 
 
 # =============================================================================
@@ -590,35 +1192,217 @@ def backtest(returns: pd.DataFrame,
 # Point-in-time backtest with time-varying universe (CRSP S&P 500)
 # ---------------------------------------------------------------------------
 
-def make_crsp_strategies(linkage_method: str = "single",
+# =============================================================================
+# 2c. ADCC-GARCH COVARIANCE ESTIMATOR
+# =============================================================================
+
+def _gjr_garch_fallback(r: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """GJR-GARCH(1,1) via scipy MLE when arch is unavailable.
+
+    Returns (cond_vol, std_resid) both shape (T,).
+    Variance recursion: h_t = ω + (α + γ·1_{r<0})·r_{t-1}² + β·h_{t-1}
+    """
+    T = len(r)
+    var_r = max(float(np.var(r)), 1e-10)
+
+    def _h_filter(params):
+        omega, alpha, gamma, beta = params
+        h = np.empty(T)
+        h[0] = var_r
+        for t in range(1, T):
+            rp = r[t - 1]
+            h[t] = (omega
+                    + (alpha + gamma * float(rp < 0.0)) * rp * rp
+                    + beta * h[t - 1])
+            if h[t] < 1e-16:
+                h[t] = 1e-16
+        return h
+
+    def _neg_ll(params):
+        o, a, g, b = params
+        if o <= 0 or a < 0 or g < 0 or b < 0:
+            return 1e10
+        if a + 0.5 * g + b >= 0.9999:
+            return 1e10
+        h = _h_filter(params)
+        return 0.5 * float(np.sum(np.log(h) + r * r / h))
+
+    x0 = [var_r * 0.05, 0.05, 0.05, 0.85]
+    res = minimize(_neg_ll, x0, method='L-BFGS-B',
+                   bounds=[(1e-10, None), (0.0, 0.5),
+                           (0.0, 0.5),   (0.0, 0.9999)],
+                   options={'maxiter': 300, 'ftol': 1e-9})
+    params = res.x if res.success else x0
+    h = np.maximum(_h_filter(params), 1e-16)
+    return np.sqrt(h), r / np.sqrt(h)
+
+
+def _adcc_filter(eps: np.ndarray, eta: np.ndarray,
+                 Q_bar: np.ndarray, a: float, b: float, g: float,
+                 compute_ll: bool = True) -> Tuple[np.ndarray, float]:
+    """
+    ADCC recursion: Q_t = Q_bar*(1-a-b) + a*eps_{t-1}eps' + b*Q_{t-1} + g*eta_{t-1}eta'
+    Returns (Q_T, log_likelihood_sum).  Q_T is the state at the end of the window.
+    """
+    T = eps.shape[0]
+    sc = 1.0 - a - b
+    Q = Q_bar.copy()
+    ll = 0.0
+    for t in range(1, T):
+        Q = (sc * Q_bar
+             + a * np.outer(eps[t - 1], eps[t - 1])
+             + b * Q
+             + g * np.outer(eta[t - 1], eta[t - 1]))
+        if compute_ll:
+            dq = np.sqrt(np.maximum(np.diag(Q), 1e-12))
+            R = Q / np.outer(dq, dq)
+            np.fill_diagonal(R, 1.0)
+            e_t = eps[t]
+            try:
+                L_chol = np.linalg.cholesky(R)
+                z = np.linalg.solve(L_chol, e_t)
+                ll += 2.0 * np.sum(np.log(np.diag(L_chol))) + float(z @ z)
+            except np.linalg.LinAlgError:
+                return Q, 1e10
+    return Q, ll
+
+
+def cov_adcc_garch_nls(X: np.ndarray) -> np.ndarray:
+    """
+    ADCC-GARCH(1,1) one-step-ahead covariance forecast + NLS shrinkage.
+
+    Pipeline
+    --------
+    1. Per-asset GJR-GARCH(1,1) (arch package if available, else scipy MLE)
+       -> conditional vols h_it and standardised residuals eps_it = r_it/sqrt(h_it).
+    2. ADCC QMLE on eps:
+         Q_t = Q_bar*(1-a-b) + a*eps_{t-1}eps_{t-1}' + b*Q_{t-1} + g*eta_{t-1}eta_{t-1}'
+       where eta_t = eps_t * (eps_t < 0).
+    3. One-step-ahead H_{T+1} = D_{T+1} R_{T+1} D_{T+1}.
+    4. NLS shrinkage (Ledoit-Wolf 2020) via pseudo-returns trick.
+
+    NOTE: the inner ADCC loop is O(T * N^2).  For N > ~150 the optimisation
+    step will be slow; consider running this strategy on smaller universes.
+    """
+    T, N = X.shape
+
+    # ---- 1. GJR-GARCH per asset ----------------------------------------
+    cond_vols = np.empty((T, N))
+    std_resid  = np.empty((T, N))
+
+    try:
+        from arch import arch_model as _arch_model
+        _arch_ok = True
+    except ImportError:
+        _arch_ok = False
+
+    for i in range(N):
+        r = X[:, i]
+        fitted = False
+        if _arch_ok:
+            try:
+                am  = _arch_model(r, vol='Garch', p=1, o=1, q=1,
+                                   dist='normal', rescale=False)
+                fit = am.fit(disp='off', show_warning=False)
+                cv  = np.maximum(fit.conditional_volatility, 1e-12)
+                cond_vols[:, i] = cv
+                std_resid[:, i] = r / cv
+                fitted = True
+            except Exception:
+                pass
+        if not fitted:
+            cond_vols[:, i], std_resid[:, i] = _gjr_garch_fallback(r)
+
+    # ---- 2. ADCC QMLE ---------------------------------------------------
+    eps   = std_resid
+    eta   = np.where(eps < 0.0, eps, 0.0)
+    Q_bar = (eps.T @ eps) / T
+
+    def _objective(params):
+        a, b, g = params
+        if a <= 0 or b <= 0 or g < 0 or (a + b + 0.5 * g) >= 0.9999:
+            return 1e10
+        _, ll = _adcc_filter(eps, eta, Q_bar, a, b, g, compute_ll=True)
+        return ll
+
+    opt = minimize(
+        _objective,
+        x0=np.array([0.05, 0.90, 0.05]),
+        method='L-BFGS-B',
+        bounds=[(1e-6, 0.30), (0.50, 0.9999), (0.0, 0.30)],
+        options={'maxiter': 200, 'ftol': 1e-8},
+    )
+    a_opt, b_opt, g_opt = opt.x
+    if a_opt + b_opt + 0.5 * g_opt >= 1.0:
+        a_opt, b_opt, g_opt = 0.05, 0.90, 0.05
+
+    # ---- 3. One-step-ahead forecast -------------------------------------
+    Q_T, _ = _adcc_filter(eps, eta, Q_bar, a_opt, b_opt, g_opt,
+                           compute_ll=False)
+
+    sc     = 1.0 - a_opt - b_opt
+    ep_T   = eps[-1]
+    et_T   = eta[-1]
+    Q_next = (sc * Q_bar
+              + a_opt * np.outer(ep_T, ep_T)
+              + b_opt * Q_T
+              + g_opt * np.outer(et_T, et_T))
+
+    dq     = np.sqrt(np.maximum(np.diag(Q_next), 1e-12))
+    R_next = Q_next / np.outer(dq, dq)
+    np.clip(R_next, -1.0, 1.0, out=R_next)
+    np.fill_diagonal(R_next, 1.0)
+    R_next = _ensure_pd(R_next)
+
+    D_next = cond_vols[-1, :]                  # last in-sample vol as T+1 forecast
+    H_next = _ensure_pd(R_next * np.outer(D_next, D_next))
+
+    # ---- 4. NLS shrinkage via pseudo-returns ----------------------------
+    # Construct (max(T, N+10), N) pseudo-returns whose sample covariance
+    # equals H_next, then apply nls.shrink_cov for spectral shrinkage.
+    try:
+        L_chol = np.linalg.cholesky(H_next)
+        rng    = np.random.default_rng(0)
+        n_pseudo = max(T, N + 10)
+        Z      = rng.standard_normal((n_pseudo, N))
+        pseudo = Z @ L_chol.T
+        shrunk = nls.shrink_cov(pseudo, k=0)
+    except Exception:
+        shrunk = H_next
+
+    return _ensure_pd(shrunk)
+
+
+def make_crsp_strategies(linkage_method: str = "ward",
                          market_cap_wide: Optional[pd.DataFrame] = None,
                          ) -> StrategyMap:
     """
-    Strategy set for the high-dimensional CRSP runs.
-
-    Differences vs make_default_strategies:
-      * HRP-POET uses POET-CV (cross-validated threshold) rather than
-        analytic-only POET, because N > T makes CV selection more stable.
-      * Three MHRP variants use _raw_returns as cov_fn so the backtest
-        engine feeds the raw return window directly to mhrp_weights, which
-        runs its own EWMA covariance internally.
-      * When market_cap_wide is provided, SPYK (market-cap weighted top-K)
-        is added as a benchmark alongside EW.
+    Strategy set for the high-dimensional CRSP runs
     """
+    def min_var_with(cov_fn):
+        return cov_fn, lambda c: min_var_weights(c)
+
     def hrp_with(cov_fn):
         return cov_fn, lambda c: hrp_weights(c, linkage_method=linkage_method)
 
-    def mhrp_with(shrinkage_fn=None):
-        return (_raw_returns,
-                lambda X: mhrp_weights(X, shrinkage_func=shrinkage_fn,
-                                       linkage_method=linkage_method))
+    def vb_hrp_with(cov_fn, cov_shrinkage=None,
+                    tree_method="topdown", erc_gamma=0.5, lam=0.25,
+                    ewma_halflife=21, turnover_penalty=0.05, weight_reg=0.1):
+        return vol_hrp_bl_strategy(cov_fn, cov_shrinkage=cov_shrinkage,
+                                    tree_method=tree_method,
+                                    erc_gamma=erc_gamma, lam=lam,
+                                    ewma_halflife=ewma_halflife,
+                                    turnover_penalty=turnover_penalty,
+                                    weight_reg=weight_reg)
 
     strategies: StrategyMap = {
-        "HRP-Sample":  hrp_with(cov_sample),
-        "HRP-LW":      hrp_with(cov_linear_shrink),
-        "HRP-NLS":     hrp_with(cov_nonlinear_shrink),
-        "HRP-POET":    hrp_with(cov_poet_cv),
-        "EW":          (cov_sample, equal_weights),
+        # Baselines
+        "HRP-Sample":              hrp_with(cov_sample),
+        "HRP-LW":                  hrp_with(cov_linear_shrink),
+        "HRP-NLS":                 hrp_with(cov_nonlinear_shrink),
+        "HRP-POET":                hrp_with(cov_poet_cv),
+        "HMVA":                    vb_hrp_with(cov_nonlinear_shrink),
+        "EW":                      (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
         strategies["SPY-K"] = (cov_sample, make_spyk_allocator(market_cap_wide))
@@ -698,7 +1482,7 @@ def backtest_pit(returns_wide: pd.DataFrame,
                   f"skipping rebalance.")
             continue
 
-        # require full non-NaN history in [t-lookback, t)
+        # require full non-NaN history in [t-lookback, t); zero-fill the rest
         window = arr[t - lookback:t, cand]
         full_hist = ~np.isnan(window).any(axis=0)
         keep = cand[full_hist]
@@ -706,24 +1490,33 @@ def backtest_pit(returns_wide: pd.DataFrame,
             print(f"[bt-pit] WARN only {keep.size} stocks survive "
                   f"history filter at {rebal_date}; skipping.")
             continue
-        window_clean = arr[t - lookback:t, keep]
+        partial = cand[~full_hist]
+        n_zeroed = partial.size
+        all_keep = np.concatenate([keep, partial]) if n_zeroed > 0 else keep
+        window_clean = np.nan_to_num(arr[t - lookback:t, all_keep], nan=0.0)
         N_t = keep.size
         universe_sizes.append({"date": rebal_date, "raw": len(universe),
-                               "in_panel": cand.size, "with_history": N_t})
+                               "in_panel": cand.size, "with_history": N_t,
+                               "zeroed": n_zeroed})
 
         for name, (cov_fn, alloc_fn) in strategies.items():
             context_aware = getattr(alloc_fn, "_context_aware", False)
             try:
                 cov = cov_fn(window_clean)
                 if context_aware:
-                    w_target = alloc_fn(cov, permnos=permnos[keep],
+                    w_target = alloc_fn(cov, permnos=permnos[all_keep],
                                         date=rebal_date)
                 else:
                     w_target = alloc_fn(cov)
             except Exception as e:
-                print(f"[bt-pit] WARN {name} t={rebal_date}: {e}; "
-                      f"falling back to 1/N_t")
-                w_target = np.ones(N_t) / N_t
+                import warnings
+                warnings.warn(
+                    f"[bt-pit] strategy='{name}' date={rebal_date.date()} "
+                    f"rebal={k+1}/{len(rebal_idx)}: {e} — "
+                    f"falling back to equal-weight 1/N (N={all_keep.size})",
+                    RuntimeWarning, stacklevel=2,
+                )
+                w_target = np.ones(all_keep.size) / all_keep.size
 
             # transaction cost: compare to drifted weights from previous period.
             # The two weight vectors live on potentially different column sets;
@@ -733,20 +1526,20 @@ def backtest_pit(returns_wide: pd.DataFrame,
                 tc = 0.0
             else:
                 old_cols, old_w = drifted[name]
-                union = np.union1d(old_cols, keep)
+                union = np.union1d(old_cols, all_keep)
                 w_old_aligned = np.zeros(union.size)
                 w_new_aligned = np.zeros(union.size)
                 w_old_aligned[np.searchsorted(union, old_cols)] = old_w
-                w_new_aligned[np.searchsorted(union, keep)] = w_target
+                w_new_aligned[np.searchsorted(union, all_keep)] = w_target
                 tc = cost_rate * np.abs(w_new_aligned - w_old_aligned).sum()
 
             weights_log[name][rebal_date] = pd.Series(
-                w_target, index=permnos[keep], name=rebal_date)
+                w_target, index=permnos[all_keep], name=rebal_date)
 
             # apply weights with drift, NaN → 0 for that day
             t_end = min(t + rebalance, T_total)
             w_curr = w_target.copy()
-            cols_curr = keep.copy()
+            cols_curr = all_keep.copy()
             for s in range(t, t_end):
                 day_rets = arr[s, cols_curr]
                 # NaN safety net: when DlyRet/DLRET is the source field,
@@ -764,8 +1557,9 @@ def backtest_pit(returns_wide: pd.DataFrame,
             drifted[name] = (cols_curr, w_curr)
 
         if verbose and ((k + 1) % 12 == 0 or k == len(rebal_idx) - 1):
+            suffix = f" + {n_zeroed}" if n_zeroed > 0 else ""
             print(f"[bt-pit]   rebal {k + 1}/{len(rebal_idx)} "
-                  f"date={rebal_date.date()} N_t={N_t}")
+                  f"date={rebal_date.date()} N_t={N_t}{suffix}")
 
     daily = pd.DataFrame(daily_pnl, index=dates).dropna(how="all")
     if rf_daily is not None:
