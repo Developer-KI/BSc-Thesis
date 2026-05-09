@@ -1396,7 +1396,7 @@ def make_crsp_strategies(linkage_method: str = "single",
 
     strategies: StrategyMap = {
         "Bets HRP":                     hrp_with(cov_nonlinear_shrink),
-        #"Best GMV":                     min_var_with(cov_nonlinear_shrink),
+            "Best GMV":                     min_var_with(cov_nonlinear_shrink),
         "HMVA":                         vb_hrp_with(cov_nonlinear_shrink),
         "EW":                           (cov_sample, equal_weights),
     }
