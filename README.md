@@ -487,6 +487,276 @@ for portfolio management._ Journal of Financial Data Science, 2(3).
 Politis, D. N., & Romano, J. P. (1994). _The stationary bootstrap._
 JASA, 89(428).
 
+---
+
+## 10. How HMVA works — a full walk-through
+
+HMVA (**Hierarchical Minimum Variance Allocator**) is the thesis's
+methodological contribution. It modifies HRP at every stage of the
+pipeline: covariance estimation, tree construction, weight allocation,
+and post-processing. The configuration used in the experiments is:
+
+| Parameter          | Value | Role                                        |
+| ------------------ | ----- | ------------------------------------------- |
+| `cov_fn`           | NLS   | Base covariance estimator                   |
+| `ewma_halflife`    | 21    | EWMA front-weighting (trading days)         |
+| `lam`              | 0.25  | Split objective blend (vol-balance / corr)  |
+| `tree_method`      | topdown | Greedy recursive splitting               |
+| `delta` / `tau`    | 2.5 / 0.05 | BL risk aversion and confidence      |
+| `weight_reg`       | 0.10  | L2 ridge toward equal weights               |
+| `turnover_penalty` | 0.05  | L1 soft-threshold on weight changes         |
+
+At each rebalance date the engine calls `_cov_fn(window)` and then
+`_alloc_fn(cov)`. The five stages below trace a single rebalance.
+
+---
+
+### Stage 1 — EWMA pseudo-returns
+
+**What**: transform the raw T × N return matrix so that the resulting
+sample covariance equals the exponentially weighted covariance with
+halflife = 21 days.
+
+**How**: each row t is scaled by `sqrt(w_t × T)`, where the EWMA
+weights are `w_t = (1 − λ)λ^{T−1−t}`, normalised to sum to 1, and
+`λ = 0.5^{1/21} ≈ 0.967`.
+
+```
+pseudo[t, :] = sqrt(w_t × T) × r[t, :]
+pseudo.T @ pseudo / T  ==  Σ_t w_t r_t r_t'  (EWMA cov)
+```
+
+**Why the trick**: NLS, LW, and POET all compute an internal sample
+covariance from whatever array you hand them. By pre-scaling the rows
+you can make any of those estimators operate on an exponentially
+weighted window without touching their internals. Recent observations
+count more, giving a covariance matrix that reacts faster to volatility
+clustering, without sacrificing the statistical properties of NLS.
+
+---
+
+### Stage 2 — Nonlinear shrinkage (NLS)
+
+**What**: apply Ledoit-Wolf (2020) analytical nonlinear shrinkage to
+the pseudo-returns array produced in Stage 1.
+
+**How**: the sample eigenvalues `{d_i}` of the pseudo-covariance are
+replaced by oracle-optimal shrinkage targets derived from the
+Marchenko-Pastur spectral density. Each eigenvalue is shrunk by a
+different, non-linear amount — large eigenvalues (capturing real risk
+factors) are shrunk less; small eigenvalues (pure noise) are shrunk
+more aggressively. The eigenvectors are unchanged.
+
+**Why**: the sample covariance eigenvalues are systematically biased —
+large ones are too large and small ones too small (Marčenko-Pastur
+law). In the high-dimensional regime (N/T ≈ 1 or 2) this bias inflates
+estimated portfolio risk for high-vol assets and deflates it for
+low-vol assets, making risk allocations unreliable. NLS corrects every
+eigenvalue optimally under squared Frobenius loss, giving the best
+well-conditioned positive-definite matrix for N close to T.
+
+---
+
+### Stage 3 — Black-Litterman expected returns
+
+**What**: compute a posterior expected-return vector `μ_BL` that blends
+the equilibrium market prior with the sample-mean view.
+
+**How** (using the **raw**, unweighted window, not the EWMA
+pseudo-returns — to avoid double-discounting the mean):
+
+1. **Prior (equilibrium)**: `π = δ Σ w_mkt`, where `w_mkt = 1/N × 1`
+   (equal-weight proxy) and `δ = 2.5`. This gives the returns that a
+   CAPM-style market would imply given the current covariance.
+
+2. **View**: one absolute view per asset, `Q_i = mean(r_i)` over the
+   lookback window. View uncertainty `Ω ∝ τΣ` with `τ = 0.05`.
+
+3. **Posterior**: the BL formula weights the prior and views inversely
+   by their respective uncertainties:
+
+   ```
+   μ_BL = [(τΣ)⁻¹ + P'Ω⁻¹P]⁻¹ [(τΣ)⁻¹π + P'Ω⁻¹Q]
+   ```
+
+   With `τ = 0.05` the prior accounts for roughly 5% of the posterior
+   weight and the sample-mean views for 95%. The BL step shrinks
+   extreme sample means toward the equilibrium, reducing sensitivity
+   to estimation error in expected returns.
+
+4. Falls back to `δ Σ w_mkt` if PyPortfolioOpt raises any exception.
+
+**Why**: HRP in its original form ignores expected returns entirely and
+allocates inversely proportional to variance. HMVA feeds the BL
+posterior into the Sharpe-ratio bisection (Stage 5) to tilt weight
+toward clusters that have historically higher risk-adjusted returns,
+while the BL prior prevents the optimizer from over-reacting to noisy
+sample means.
+
+---
+
+### Stage 4 — Vol-balanced tree construction (top-down, lam = 0.25)
+
+**What**: partition the N assets into a binary hierarchy whose
+structure encodes both risk similarity and diversification.
+
+**How** (`tree_method = "topdown"`): a breadth-first greedy recursion
+starting from a root node containing all N assets.
+
+At each node, assets are split into two child groups A and B by
+minimising the **blended split objective**:
+
+```
+f(A, B; λ) = λ × vol_balance(A, B)  +  (1 − λ) × ρ(A, B)
+```
+
+where:
+- `vol_balance = |vol(A) − vol(B)| / (vol(A) + vol(B))`
+  — equal-weight volatility imbalance between the two groups.
+- `ρ(A, B) = cross(A→B) / sqrt(sw_A × sw_B)`
+  — equal-weight inter-cluster correlation, computed as the one-way
+  cross-covariance sum divided by the geometric mean of the two
+  within-cluster covariance sums.
+- With `λ = 0.25`: the split is 75% driven by minimising correlation
+  (maximising diversification) and 25% by balancing risk.
+
+**Algorithm per node**:
+
+- **Large clusters (> 10 assets)** — `_vb_split_heuristic`: assets are
+  sorted by within-cluster row-sum `rowsum_i = Σ_j Σ_ij` (a proxy for
+  within-cluster systematic risk). All n−1 contiguous cuts of the
+  sorted list are evaluated in O(n) using 2-D cumulative prefix sums
+  of the sub-covariance matrix; the cut minimising `f` is chosen.
+
+- **Small clusters (≤ 10 assets)** — `_vb_split_bruteforce`: all
+  subsets of size 1 to n//2 are enumerated exhaustively (exploiting
+  A/B symmetry) and the globally optimal split is returned.
+
+**Why**: standard HRP derives the hierarchy from an agglomerative
+clustering of the *correlation* matrix (merging most-correlated pairs
+first). This conflates two distinct concepts: assets can be
+highly-correlated *and* have very different volatilities, producing a
+hierarchy that misallocates risk across branches. HMVA's split
+criterion directly minimises the quantity that matters for risk
+allocation — vol imbalance — while the correlation term (weighted 75%)
+ensures that uncorrelated assets are still grouped separately, preserving
+diversification.
+
+---
+
+### Stage 5 — Sharpe-ratio bisection
+
+**What**: traverse the tree top-down, allocating weight between left
+and right subtrees in proportion to their estimated Sharpe ratios.
+
+**How** (`_vb_bisect_sharpe`):
+
+1. Start at the root with total weight `p = 1.0`.
+2. At each internal node with children L and R, compute:
+   ```
+   S(C) = max( (μ̄_C − rf) / σ_EW(C),  0 )
+   ```
+   where `μ̄_C = mean(μ_BL[C])` is the BL posterior mean for the
+   cluster and `σ_EW(C)` is the equal-weight portfolio volatility
+   within the cluster (extracted from the covariance submatrix). The
+   `max(..., 0)` clamps negative Sharpe to zero — a cluster with
+   negative expected excess return gets zero weight.
+
+3. Allocate:
+   ```
+   weight(L) = p × S(L) / (S(L) + S(R))
+   weight(R) = p × S(R) / (S(L) + S(R))
+   ```
+   If both Sharpes are zero (or the BL posterior is flat) the split
+   defaults to 50/50, degenerating to the vol-balanced allocation.
+
+4. Recurse until leaf nodes (single assets) receive their final weight.
+
+**Why**: classic HRP bisection splits weight inversely proportional to
+within-cluster variance (the cluster that is more volatile gets *less*
+weight). This is purely risk-driven and ignores return expectations.
+The Sharpe-ratio bisection adds a forward-looking tilt: a cluster with
+higher expected return per unit of risk is allocated more capital, but
+the allocation is still bounded by the tree structure (no cluster can
+receive weight beyond its subtree's budget), preventing the extreme
+concentration that unconstrained mean-variance would produce.
+
+---
+
+### Stage 6 — Post-processing: L2 regularisation and L1 turnover penalty
+
+After bisection produces raw weights `w`:
+
+**L2 regularisation** (`weight_reg = 0.10`):
+
+```
+w ← 0.90 × w  +  0.10 × (1/N × 1)
+```
+
+Shrinks every weight 10% toward the equal-weight portfolio. Acts like
+a ridge penalty on active positions: concentrated bets get pulled back
+toward the benchmark, reducing single-stock risk without completely
+eliminating the HRP tilt.
+
+**L1 turnover penalty** (`turnover_penalty = 0.05`):
+
+A proximal soft-threshold step applied to weight *changes* from the
+previous rebalance target `w_prev`:
+
+```
+Δ     = w − w_prev
+Δ_sh  = sign(Δ) × max(|Δ| − 0.05, 0)    (element-wise)
+w     = max(w_prev + Δ_sh, 0)
+```
+
+Weight changes smaller than 5 percentage points are completely zeroed
+out (the position is not rebalanced). Changes larger than 5pp are
+executed but reduced by 5pp. This is equivalent to the proximal
+operator of the L1 norm: it penalises unnecessary churning without
+forbidding large rebalances when the signal is strong. The result is
+sparser rebalancing, lower realised transaction costs, and smoother
+weight trajectories.
+
+---
+
+### Full pipeline summary
+
+```
+Raw returns window (T × N)
+        │
+        ▼  Stage 1: EWMA pseudo-returns (halflife=21)
+        │            → recent obs count more; any estimator works
+        │
+        ▼  Stage 2: NLS covariance (Ledoit-Wolf 2020)
+        │            → well-conditioned Σ̂, optimal at high N/T
+        │
+        ▼  Stage 3: Black-Litterman μ (δ=2.5, τ=0.05)
+        │            → shrinks sample means toward CAPM equilibrium
+        │
+        ▼  Stage 4: Vol-balanced top-down tree (λ=0.25)
+        │            → hierarchy that balances risk and maximises diversification
+        │
+        ▼  Stage 5: Sharpe-ratio bisection
+        │            → weights proportional to cluster risk-adjusted return
+        │
+        ▼  Stage 6: L2 blend toward 1/N (10%) + L1 turnover filter (5pp)
+        │            → concentration control + transaction-cost reduction
+        │
+        └─► Final weights w ∈ ℝ_+^N,  sum(w) = 1
+```
+
+The key conceptual point for the thesis: each stage directly addresses
+a known failure mode of standard HRP.
+
+| Standard HRP failure mode                                     | HMVA fix                        |
+| ------------------------------------------------------------- | ------------------------------- |
+| Sample covariance is noisy / singular at high N/T             | NLS covariance (Stage 2)        |
+| All observations are weighted equally, ignoring vol clustering | EWMA pseudo-returns (Stage 1)   |
+| Hierarchy conflates correlation and risk imbalance            | Vol-balanced split (Stage 4)    |
+| Bisection ignores expected returns entirely                   | BL + Sharpe bisection (Stages 3, 5) |
+| Weights can be highly concentrated in a single asset          | L2 ridge (Stage 6)              |
+| Unnecessary churning inflates realised transaction costs      | L1 turnover filter (Stage 6)    |
+
 # current idea:
 
 (1-2 pages) 0. Introduction - give the idea that its interesing direction to see if even without error amplification shrinakge gets better results in portfolio allocation
@@ -509,6 +779,47 @@ Data:
 
 - Explain DGPs (1 page) - 2 regimes: sparse factor creation, and spiked non linear dense eigenvalues
 - Explain Data (1 page) - point in time SP500 equities (maybe restricted to top 100 for easier computation and delistings are handled as 0 return)
+
+4. Results
+
+- Replication: Run cov simulation study to motivate covarinace improvement idea Sample vs All, then LW vs NLS, POET - run_simulation.py (2 pages) (done with results)
+- New empirical result: Run a full robustness test of the alpha based on transaction costs, linkage and lookback (result seems to be the alpha doesnt come from shrinkage only, only linear cost, done with results)
+- Innovate by creating a modification to HRP called HDRP - idea is that cov estimation errors are not amplified, hence we can be sparing when forecasting and innovating on incorporating complexity in the forward looking estimation
+- Sample vs LW, NLS, POET HDRP wtih 1/N, SPY-K benchmarks - run_crsp.py (2 pages)
+- Start using best LW MHRP as basis to comapre to advanced shrinkage NLS, POET MHRP overall and with transaction costs - run_robustness.py
+
+5. Conclussion
+
+- Summarize results of my experiments and propose future research directions like
+
+
+# current idea:
+
+(1-2 pages) 0. Introduction - give the idea that its interesing direction to see if even without error amplification shrinakge gets better results in portfolio allocation
+(2-3 pages)
+
+1. Lit review
+
+- Summarize all papers used through and conclude that no simillar test has been carried
+
+2. Methodology
+
+Portfolio Theory:
+
+- Explain Porfolio construction with mean-variance and HRP, with 1/N and SPY-K portfolios as benchmark (1 page)
+- Explain NLS (2 pages)
+- Explain Black litterman
+- Explain EWA 
+- Explain Regularization
+
+Data:
+
+- Explain DGPs (1 page) - 2 regimes: sparse factor creation, and spiked non linear dense eigenvalues
+- Explain Data (1 page) - point in time SP500 equities (maybe restricted to top 100 for easier computation and delistings are handled as 0 return)
+
+3. Innovation
+
+Prove and explain HMVA and how its constructed
 
 4. Results
 

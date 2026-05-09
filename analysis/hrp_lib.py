@@ -1373,7 +1373,7 @@ def cov_adcc_garch_nls(X: np.ndarray) -> np.ndarray:
     return _ensure_pd(shrunk)
 
 
-def make_crsp_strategies(linkage_method: str = "ward",
+def make_crsp_strategies(linkage_method: str = "single",
                          market_cap_wide: Optional[pd.DataFrame] = None,
                          ) -> StrategyMap:
     """
@@ -1385,24 +1385,20 @@ def make_crsp_strategies(linkage_method: str = "ward",
     def hrp_with(cov_fn):
         return cov_fn, lambda c: hrp_weights(c, linkage_method=linkage_method)
 
-    def vb_hrp_with(cov_fn, cov_shrinkage=None,
-                    tree_method="topdown", erc_gamma=0.5, lam=0.25,
-                    ewma_halflife=21, turnover_penalty=0.05, weight_reg=0.1):
+    # topdown tree, ERC not needed, lam: VR-CA blend 25%, ewma hl = rebalance time, NLS shrinkage, BL signal,, L1 pen 5%, L2 pen 10%
+    def vb_hrp_with(cov_fn, cov_shrinkage=None, tree_method="topdown", lam=0.25, ewma_halflife=21, turnover_penalty=0.05, weight_reg=0.1):
         return vol_hrp_bl_strategy(cov_fn, cov_shrinkage=cov_shrinkage,
-                                    tree_method=tree_method,
-                                    erc_gamma=erc_gamma, lam=lam,
+                                    tree_method=tree_method, 
+                                    lam=lam,
                                     ewma_halflife=ewma_halflife,
                                     turnover_penalty=turnover_penalty,
                                     weight_reg=weight_reg)
 
     strategies: StrategyMap = {
-        # Baselines
-        "HRP-Sample":              hrp_with(cov_sample),
-        "HRP-LW":                  hrp_with(cov_linear_shrink),
-        "HRP-NLS":                 hrp_with(cov_nonlinear_shrink),
-        "HRP-POET":                hrp_with(cov_poet_cv),
-        "HMVA":                    vb_hrp_with(cov_nonlinear_shrink),
-        "EW":                      (cov_sample, equal_weights),
+        "Bets HRP":                     hrp_with(cov_nonlinear_shrink),
+        #"Best GMV":                     min_var_with(cov_nonlinear_shrink),
+        "HMVA":                         vb_hrp_with(cov_nonlinear_shrink),
+        "EW":                           (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
         strategies["SPY-K"] = (cov_sample, make_spyk_allocator(market_cap_wide))
