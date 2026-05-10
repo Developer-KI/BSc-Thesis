@@ -11,7 +11,7 @@ from numpy import linalg as la
 from scipy.cluster.hierarchy import linkage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from analysis.plotting import (
+from analysis.utils.plotting import (
     plot_dendrogram, plot_cumulative_returns, plot_drawdown,
     plot_rolling_sharpe, plot_sharpe_bar, plot_performance_summary,
 )

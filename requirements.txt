@@ -1,7 +1,7 @@
-numpy>=1.23
-pandas>=1.5
-scipy>=1.10
-scikit-learn>=1.2
-yfinance>=0.2.30
-matplotlib>=3.6
-seaborn>=0.12
+numpy>=2.4
+pandas>=3.0
+scipy>=1.17
+scikit-learn>=1.8
+matplotlib>=3.10
+seaborn>=0.13
+nonlinshrink>=0.7

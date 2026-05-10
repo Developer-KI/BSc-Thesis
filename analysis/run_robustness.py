@@ -46,21 +46,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-import hrp_lib as L
-import crsp_data as C
+import utils.strategy as L
+import utils.data as C
+import utils.plotting as _plt
 
 
 # -----------------------------------------------------------------------------
 # Defaults (override via CLI)
 # -----------------------------------------------------------------------------
-DATA_CSV = "./data/universe/stock_daily_returns.csv"
-CONSTITUENTS_CSV = "./data/universe/constiuents.csv"
+DATA_CSV = "./data/stock_daily_returns.csv"
+CONSTITUENTS_CSV = "./data/constiuents.csv"
 PERMNO_LIST_TXT = "./data/unique_ids.txt"
 
 # CRSP CIZ format defaults
-PRICE_COL = "DlyClose"
-DATE_COL = "DlyCalDt"
 PERMNO_COL = "PERMNO"
+DATE_COL = "DlyCalDt"
+PRICE_COL = "DlyClose"
 RET_COL = "DlyRet"
 
 # Sample period
@@ -68,14 +69,13 @@ START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
 
 # Default grid
-DEFAULT_LOOKBACKS = "126, 252, 504"
+DEFAULT_LOOKBACKS = "252, 504"
 DEFAULT_COSTS = "0, 2, 5, 10"
 DEFAULT_LINKAGES = "single"
 DEFAULT_REBALANCE = 21
 DEFAULT_TOP_K = 100
 
-RISK_FREE = 0.0
-
+RISK_FREE_BPS = 0.0
 
 # -----------------------------------------------------------------------------
 # Strategy filtering
@@ -121,7 +121,7 @@ def run_grid(returns_wide: pd.DataFrame,
                       f"linkage={lnk}")
                 print("-" * 72)
 
-                strategies = L.make_crsp_strategies(linkage_method=lnk, market_cap_wide=market_cap_wide)
+                strategies = L.make_crsp_strategies(market_cap_wide=market_cap_wide)
                 strategies = filter_strategies(strategies, strategies_keep)
                 print(f"  strategies in this cell: {list(strategies.keys())}")
 
@@ -135,17 +135,26 @@ def run_grid(returns_wide: pd.DataFrame,
 
                     base_sr = metrics.loc["EW", "Sharpe"] \
                         if "EW" in metrics.index else np.nan
+                    base_so = metrics.loc["EW", "Sortino"] \
+                        if "EW" in metrics.index and "Sortino" in metrics.columns \
+                        else np.nan
                     for strat, m in metrics.iterrows():
                         rows.append({
                             "lookback": lb, "cost_bps": cost, "linkage": lnk,
                             "strategy": strat,
-                            "ann_return": m["AnnReturn"],
-                            "ann_vol": m["AnnVol"],
-                            "sharpe": m["Sharpe"],
-                            "max_dd": m["MaxDD"],
-                            "calmar": m["Calmar"],
-                            "turnover": m["Turnover"],
-                            "sharpe_minus_base": m["Sharpe"] - base_sr,
+                            "ann_return":  m["AnnReturn"],
+                            "ann_vol":     m["AnnVol"],
+                            "sharpe":      m["Sharpe"],
+                            "sortino":     m.get("Sortino",  np.nan),
+                            "omega":       m.get("Omega",    np.nan),
+                            "max_dd":      m["MaxDD"],
+                            "calmar":      m["Calmar"],
+                            "var95":       m.get("VaR95",    np.nan),
+                            "cvar95":      m.get("CVaR95",   np.nan),
+                            "hit_rate":    m.get("HitRate",  np.nan),
+                            "turnover":    m["Turnover"],
+                            "sharpe_minus_base":  m["Sharpe"] - base_sr,
+                            "sortino_minus_base": m.get("Sortino", np.nan) - base_so,
                         })
                 except Exception as e:
                     print(f"  ! cell failed: {type(e).__name__}: {e}")
@@ -169,7 +178,10 @@ def run_grid(returns_wide: pd.DataFrame,
 # -----------------------------------------------------------------------------
 
 def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
-    """One ΔSharpe-vs-base heatmap per strategy (lookback × cost_bps), averaged over linkage."""
+    """
+    Heatmaps per strategy (lookback × cost_bps), averaged over linkage.
+    Produces ΔSharpe and ΔSortino grids for each non-EW strategy.
+    """
     os.makedirs(outdir, exist_ok=True)
     sns.set_style("white")
 
@@ -177,28 +189,59 @@ def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
     if df.empty:
         return
 
-    strategies = sorted(s for s in df["strategy"].unique()
-                        if s != "EW")
+    _metrics = [
+        ("sharpe_minus_base",  "ΔSharpe vs EW",  "sharpe"),
+        ("sortino_minus_base", "ΔSortino vs EW", "sortino"),
+    ]
+
+    strategies = sorted(s for s in df["strategy"].unique() if s != "EW")
     for strat in strategies:
         sub = df[df["strategy"] == strat]
-        try:
-            pivot = (sub.groupby(["lookback", "cost_bps"])["sharpe_minus_base"]
-                        .mean().unstack("cost_bps"))
-        except Exception:
-            continue
-        if pivot.empty:
-            continue
-        fig, ax = plt.subplots(figsize=(6, 4))
-        sns.heatmap(pivot, annot=True, fmt=".3f", cmap="RdBu_r",
-                    center=0, ax=ax, cbar_kws={"label": "ΔSharpe vs EW"})
-        ax.set_title(f"{strat}: Sharpe − EW\n"
-                     f"averaged over linkage methods")
-        ax.set_xlabel("cost_bps")
-        ax.set_ylabel("lookback")
-        plt.tight_layout()
         safe = strat.replace("-", "_").replace("/", "_")
-        plt.savefig(f"{outdir}/heatmap_{safe}.png", dpi=120)
-        plt.close()
+        for col, label, fname_tag in _metrics:
+            if col not in df.columns or sub[col].isna().all():
+                continue
+            try:
+                pivot = (sub.groupby(["lookback", "cost_bps"])[col]
+                            .mean().unstack("cost_bps"))
+            except Exception:
+                continue
+            if pivot.empty:
+                continue
+            _, ax = plt.subplots(figsize=(6, 4))
+            sns.heatmap(pivot, annot=True, fmt=".3f", cmap="RdBu_r",
+                        center=0, ax=ax, cbar_kws={"label": label})
+            ax.set_title(f"{strat}: {label}\naveraged over linkage methods")
+            ax.set_xlabel("cost_bps")
+            ax.set_ylabel("lookback")
+            plt.tight_layout()
+            plt.savefig(f"{outdir}/heatmap_{fname_tag}_{safe}.png", dpi=120)
+            plt.close()
+
+
+def make_summary_table_plot(summary: pd.DataFrame, outdir: str) -> None:
+    """Colour-coded metrics table of the robustness summary using plotting.py."""
+    if _plt is None:
+        return
+    _rename = {
+        "mean_sharpe":   "Sharpe Ratio",
+        "mean_sortino":  "Sortino Ratio",
+        "mean_calmar":   "Calmar Ratio",
+        "mean_max_dd":   "Max Drawdown (%)",
+        "mean_var95":    "VaR 95% (%)",
+        "mean_hit_rate": "Hit Rate (%)",
+        "mean_turnover": "Turnover",
+        "mean_dSharpe":  "ΔSharpe vs EW",
+        "mean_dSortino": "ΔSortino vs EW",
+    }
+    cols = [c for c in _rename if c in summary.columns]
+    tbl = summary[cols].rename(columns=_rename)
+    _plt.plot_metrics_table(
+        tbl,
+        title="Robustness Summary: Mean Performance Metrics by Strategy",
+        save_path=f"{outdir}/robustness_metrics_table.png",
+    )
+    plt.close("all")
 
 
 def linkage_sensitivity_plot(df: pd.DataFrame, outdir: str) -> None:
@@ -295,7 +338,7 @@ def main(argv=None) -> None:
     )
 
     # rf = 0 for the CRSP run (see run_crsp.py for justification)
-    daily_rate = (1 + RISK_FREE)**(1/365) - 1
+    daily_rate = (1 + RISK_FREE_BPS)**(1/365) - 1
     rf_daily = pd.Series(daily_rate, index=returns_wide.index)
 
     cap_wide = universe_fn._cap_wide
@@ -324,7 +367,13 @@ def main(argv=None) -> None:
                                  median_dSharpe=("sharpe_minus_base", "median"),
                                  pct_positive=("sharpe_minus_base",
                                                lambda s: (s > 0).mean()),
+                                 mean_dSortino=("sortino_minus_base", "mean"),
                                  mean_sharpe=("sharpe", "mean"),
+                                 mean_sortino=("sortino", "mean"),
+                                 mean_calmar=("calmar", "mean"),
+                                 mean_max_dd=("max_dd", "mean"),
+                                 mean_var95=("var95", "mean"),
+                                 mean_hit_rate=("hit_rate", "mean"),
                                  mean_turnover=("turnover", "mean"),
                                  n_cells=("sharpe", "count")))
         print("\n=== Summary across robustness cells ===")
@@ -334,6 +383,7 @@ def main(argv=None) -> None:
         # -- 4.  Plots --------------------------------------------------
         make_heatmaps(df_clean, args.out)
         linkage_sensitivity_plot(df_clean, args.out)
+        make_summary_table_plot(summary, args.out)
         print(f"[done] plots in {args.out}/")
     else:
         print("[warn] no successful cells; nothing to summarise.")

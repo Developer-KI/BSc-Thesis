@@ -42,7 +42,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import wilcoxon
 
-import hrp_lib as L
+import utils.plotting as _plt
+import utils.strategy as L
 
 
 # -----------------------------------------------------------------------------
@@ -53,7 +54,7 @@ import hrp_lib as L
 DEFAULT_N = 100
 
 # T/N ratios to sweep 
-DEFAULT_T_N_RATIOS = "0.63, 1.26, 2.52, 5.04"
+DEFAULT_T_N_RATIOS = "2.52, 5.04"
 
 # Data-generating regimes
 REGIMES = ["dispersed_eigs", "factor_sparse"]
@@ -85,7 +86,7 @@ def run_cell(regime: str,
         "Sample": L.cov_sample,
         "LW": L.cov_linear_shrink,
         "NLS": L.cov_nonlinear_shrink,
-        "POET": L.cov_poet_cv,
+        "POET": L.cov_poet,
     }
 
     rows = []
@@ -250,6 +251,47 @@ def plot_bar_improvement_over_lw(results_df: pd.DataFrame,
 
 
 # -----------------------------------------------------------------------------
+# Summary table using plotting.py
+# -----------------------------------------------------------------------------
+
+def plot_sim_summary_table(results_df: pd.DataFrame, outdir: str) -> None:
+    """
+    Render a colour-coded performance table per regime using plotting.py.
+
+    Columns = estimators (Sample, LW, NLS, POET).
+    Rows = improvement metrics where higher is unambiguously better:
+        Imp. over Sample (%) = -mv_relative_to_sample  (positive = better)
+        Imp. over LW (%)     = -mv_relative_to_lw      (positive = better)
+    One PNG per regime saved to outdir/sim_table_<regime>.png.
+    """
+    if _plt is None:
+        return
+    order = [e for e in ["Sample", "LW", "NLS", "POET"]
+             if e in results_df["estimator"].unique()]
+    for regime in results_df["regime"].unique():
+        sub = results_df[results_df["regime"] == regime]
+        agg = (sub.groupby("estimator")
+                  .agg(rel_sample=("mv_relative_to_sample", "mean"),
+                       rel_lw=("mv_relative_to_lw", "mean"),
+                       mean_mv=("minvar_true_var", "mean"),
+                       frobenius=("frobenius", "mean"))
+                  .reindex(order))
+        tbl = pd.DataFrame({
+            "Imp. over Sample (%)": -agg["rel_sample"],
+            "Imp. over LW (%)":     -agg["rel_lw"],
+            "Mean MVP Variance":     agg["mean_mv"],
+            "Mean Frobenius Loss":   agg["frobenius"],
+        }, index=agg.index)
+        _plt.plot_metrics_table(
+            tbl,
+            title=f"Simulation Summary – {regime}\n"
+                  f"(Imp. columns: positive = better than baseline)",
+            save_path=f"{outdir}/sim_table_{regime}.png",
+        )
+        plt.close("all")
+
+
+# -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
@@ -368,12 +410,15 @@ def main() -> None:
     plot_relative_improvement_heatmaps(summary, args.out)
     plot_bar_improvement_over_lw(results, args.out)
 
-    # Also use the simulation plotting function from hrp_lib (optional)
+    # hrp_lib legacy simulation plots
     try:
         L.plot_simulation_results(results, args.out)
         print("Generated additional plots from hrp_lib.plot_simulation_results")
     except Exception as e:
         print(f"hrp_lib.plot_simulation_results failed: {e}")
+
+    # plotting.py summary tables (one per regime)
+    plot_sim_summary_table(results, args.out)
 
     total_time = time.time() - start_time
     print(f"\n[done] Total runtime: {total_time/60:.1f} minutes.")
