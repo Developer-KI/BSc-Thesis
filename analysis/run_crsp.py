@@ -47,8 +47,8 @@ import crsp_data as C
 # -----------------------------------------------------------------------------
 # Defaults (override via CLI)
 # -----------------------------------------------------------------------------
-DATA_CSV = "./data/universe/stock_daily_returns.csv"
-CONSTITUENTS_CSV = "./data/universe/constiuents.csv"
+DATA_CSV = "./data/stock_daily_returns.csv"
+CONSTITUENTS_CSV = "./data/constiuents.csv"
 PERMNO_LIST_TXT = "./data/unique_ids.txt"
 
 # CRSP CIZ format defaults

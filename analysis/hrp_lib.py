@@ -516,6 +516,22 @@ def _ewma_pseudo(returns: np.ndarray, halflife: float) -> np.ndarray:
     return np.sqrt(w * T)[:, None] * returns
 
 
+def _ewma_mean(returns: np.ndarray, halflife: float) -> np.ndarray:
+    """EWMA-weighted column means — recent observations weighted more heavily.
+
+    Uses the same decay convention as _ewma_pseudo so the two functions
+    share a consistent halflife interpretation.  Returns shape (N,).
+    """
+    if halflife <= 0:
+        raise ValueError("halflife must be positive")
+    T = returns.shape[0]
+    lambda_ = 0.5 ** (1.0 / halflife)
+    exponents = np.arange(T - 1, -1, -1, dtype=float)
+    w = (1.0 - lambda_) * np.power(lambda_, exponents)
+    w /= w.sum()
+    return w @ returns
+
+
 def cov_ewma(returns: np.ndarray,
              halflife: Optional[float] = None,
              lambda_: float = 0.97,
@@ -879,8 +895,16 @@ def _build_vb_tree_bottomup(cov_arr: np.ndarray, n: int,
 
 def _vb_bisect_sharpe(node: dict, pw: float,
                        cov_arr: np.ndarray, mu_arr: np.ndarray,
-                       rf: float) -> Dict[int, float]:
-    """Allocate weight pw between subtrees proportional to non-negative cluster Sharpe."""
+                       rf: float,
+                       sharpe_shrink: float = 0.0) -> Dict[int, float]:
+    """Allocate weight pw between subtrees proportional to non-negative cluster Sharpe.
+
+    sharpe_shrink blends each node's allocation toward 50/50 via James-Stein
+    shrinkage of the two sibling Sharpe estimates toward their mean:
+        alpha = (1 - sharpe_shrink) * (S_L / (S_L + S_R))  +  sharpe_shrink * 0.5
+    sharpe_shrink=0 (default) is the original behaviour; sharpe_shrink=1 ignores
+    Sharpe entirely (pure vol-balanced allocation).
+    """
     if node is None or not node["indices"]:
         return {}
     idx = node["indices"]
@@ -899,10 +923,11 @@ def _vb_bisect_sharpe(node: dict, pw: float,
 
     sl, sr = _sharpe(left["indices"]), _sharpe(right["indices"])
     tot = sl + sr
-    alpha = sl / tot if tot > 1e-12 else 0.5
+    raw_alpha = sl / tot if tot > 1e-12 else 0.5
+    alpha = (1.0 - sharpe_shrink) * raw_alpha + sharpe_shrink * 0.5
     return {
-        **_vb_bisect_sharpe(left,  pw * alpha,       cov_arr, mu_arr, rf),
-        **_vb_bisect_sharpe(right, pw * (1 - alpha), cov_arr, mu_arr, rf),
+        **_vb_bisect_sharpe(left,  pw * alpha,       cov_arr, mu_arr, rf, sharpe_shrink),
+        **_vb_bisect_sharpe(right, pw * (1 - alpha), cov_arr, mu_arr, rf, sharpe_shrink),
     }
 
 
@@ -946,7 +971,12 @@ def vol_hrp_bl_weights(cov: np.ndarray,
                         lam: float = 1.0,
                         turnover_penalty: float = 0.0,
                         weight_reg: float = 0.0,
-                        w_prev: Optional[np.ndarray] = None) -> np.ndarray:
+                        w_prev: Optional[np.ndarray] = None,
+                        sharpe_shrink: float = 0.0,
+                        regime_lam: bool = False,
+                        lam_base: float = 0.0,
+                        lam_scale: float = 0.5,
+                        lam_corr: float = 0.0) -> np.ndarray:
     """
     Volatility-balanced HRP with Sharpe-ratio bisection and optional secondary
     covariance shrinkage and/or risk-contribution equalisation.
@@ -972,6 +1002,7 @@ def vol_hrp_bl_weights(cov: np.ndarray,
                         within-cluster row-sum.
         (0, 1)        — convex blend; lam=0.5 weights both objectives equally.
         See _vb_merge_cost and _vb_split_heuristic for the formula.
+        Ignored when regime_lam=True (lam_base + lam_scale * CV_vol is used).
     turnover_penalty : L1 penalty strength on weight changes vs w_prev.
         Applied as a proximal soft-threshold step: deviations from w_prev
         smaller than this value are zeroed, larger ones are shrunk by it.
@@ -981,6 +1012,30 @@ def vol_hrp_bl_weights(cov: np.ndarray,
         weight_reg=1 collapses to 1/N.  Typical range: 0.05–0.3.
     w_prev : previous target weights (N,) for the L1 turnover penalty.
         Pass None (default) to skip the turnover penalty.
+    sharpe_shrink : James-Stein shrinkage intensity for cluster Sharpe ratios,
+        in [0, 1].  At each bisection node the raw allocation alpha = S_L/(S_L+S_R)
+        is blended toward 0.5: alpha = (1-sharpe_shrink)*raw_alpha + sharpe_shrink*0.5.
+        0.0 (default) is the original unregularised bisection; 1.0 collapses
+        every split to 50/50 (pure vol-balanced, BL signal ignored entirely).
+        Typical range: 0.2–0.5.
+    regime_lam : when True, overrides lam at each call with a data-driven value
+        computed from the cross-sectional dispersion of asset volatilities:
+            CV_vol = std(vols) / mean(vols),  vols = sqrt(diag(Σ))
+            lam_eff = clip(lam_base + lam_scale * CV_vol, 0, 1)
+        High vol dispersion (crisis) → higher lam_eff (more vol-balance focus).
+        Low vol dispersion (calm)    → lower lam_eff (more correlation focus).
+        False (default) uses the fixed lam parameter.
+    lam_base  : intercept for the regime-conditional lam formula (default 0.0).
+    lam_scale : slope on CV_vol for the regime-conditional lam formula (default 0.5).
+        With lam_base=0.0, lam_scale=0.5: CV_vol=0.3 → contribution ≈0.15 (calm),
+        CV_vol=0.8 → contribution ≈0.40 (crisis).
+    lam_corr  : slope on average pairwise correlation for the regime-conditional
+        lam formula (default 0.0 = disabled).  When non-zero, adds a second
+        regime signal orthogonal to CV_vol:
+            avg_corr = mean of off-diagonal entries of corr(Σ)
+            lam_eff  = clip(lam_base + lam_scale*CV_vol + lam_corr*avg_corr, 0, 1)
+        High avg_corr (crisis, everything co-moves) → higher lam_eff (vol-balance
+        dominates because cluster structure breaks down).  Typical range: 0.1–0.3.
     """
     N = cov.shape[0]
     cov_pd = _ensure_pd(cov)
@@ -1005,13 +1060,25 @@ def vol_hrp_bl_weights(cov: np.ndarray,
         except Exception:
             pass
 
+    if regime_lam:
+        vols = np.sqrt(np.maximum(np.diag(cov_pd), 0.0))
+        mean_vol = float(vols.mean())
+        cv_vol = float(vols.std()) / mean_vol if mean_vol > 1e-12 else 0.0
+        avg_corr = 0.0
+        if lam_corr != 0.0:
+            inv_vols = np.where(vols > 1e-12, 1.0 / vols, 0.0)
+            corr_mat = cov_pd * np.outer(inv_vols, inv_vols)
+            N_ = cov_pd.shape[0]
+            avg_corr = float((corr_mat.sum() - N_) / max(N_ * (N_ - 1), 1))
+        lam = float(np.clip(lam_base + lam_scale * cv_vol + lam_corr * avg_corr, 0.0, 1.0))
+
     mu_arr = np.asarray(mu, dtype=float)
     if tree_method == "bottomup":
         tree = _build_vb_tree_bottomup(cov_pd, N, lam=lam)
     else:
         tree = _build_vb_tree(cov_pd, N, bf_threshold, lam=lam)
 
-    w_dict = _vb_bisect_sharpe(tree, 1.0, cov_pd, mu_arr, rf)
+    w_dict = _vb_bisect_sharpe(tree, 1.0, cov_pd, mu_arr, rf, sharpe_shrink)
     w = np.zeros(N)
     for i, wt in w_dict.items():
         w[i] = wt
@@ -1051,6 +1118,15 @@ def vol_hrp_bl_strategy(
     ewma_halflife: Optional[float] = None,
     turnover_penalty: float = 0.0,
     weight_reg: float = 0.0,
+    vol_target: Optional[float] = None,
+    adaptive_tau: bool = False,
+    bl_prior_from_prev_w: bool = False,
+    sharpe_shrink: float = 0.0,
+    regime_lam: bool = False,
+    lam_base: float = 0.0,
+    lam_scale: float = 0.5,
+    lam_corr: float = 0.0,
+    mu_method: str = "bl",
 ) -> Tuple[Callable, Callable]:
     """
     Factory: (cov_fn, alloc_fn) pair for vol-balanced HRP with BL returns.
@@ -1076,6 +1152,37 @@ def vol_hrp_bl_strategy(
         tracks previous target weights across rebalances automatically.
     weight_reg    : L2 regularisation (ridge toward equal weights) passed to
         vol_hrp_bl_weights.
+    vol_target    : annualised volatility target (e.g. 0.10 for 10%).  When set,
+        weights are scaled after the L1/L2 step so that ex-ante annualised
+        portfolio volatility equals vol_target (assumes daily cov, multiplied
+        by 252 to annualise).  The portfolio may then be levered (weights sum
+        > 1) or de-levered (weights sum < 1).  prev_w always stores the
+        pre-scaling directional weights so the turnover penalty and BL prior
+        are unaffected by the leverage level.  None (default) = no scaling.
+    adaptive_tau  : when True, overrides tau with 1/T at each rebalance, where
+        T is the lookback window length.  Longer windows give more confidence
+        to historical-mean views; shorter windows lean on the equilibrium prior.
+        Theoretically motivated: BL derivation sets tau ~ 1/T.  False = fixed tau.
+    bl_prior_from_prev_w : when True (and prev_w is available after the first
+        rebalance), uses the previous rebalance's target weights as the BL
+        market proxy instead of equal weights.  The equilibrium prior
+        π = δ Σ w_prev reflects the returns implied by the portfolio's own
+        previous allocation, creating an auto-regressive regularisation.
+        Falls back to equal-weight on the first rebalance.  False = equal-weight.
+    sharpe_shrink : passed to _vb_bisect_sharpe; see vol_hrp_bl_weights for details.
+        0.0 (default) = no shrinkage.  Typical range: 0.2–0.5.
+    regime_lam, lam_base, lam_scale, lam_corr : passed to vol_hrp_bl_weights; see
+        its docstring for the CV-vol + avg-corr formula.
+        regime_lam=False (default) = fixed lam; lam_corr=0.0 (default) disables
+        the average-correlation term even when regime_lam=True.
+    mu_method : return estimation method for the Sharpe-ratio bisection.
+        "bl"                — Black-Litterman posterior (default, original behaviour).
+        "hist"              — plain historical mean of the lookback window.
+        "cluster_momentum"  — EWMA-weighted mean with halflife=ewma_halflife (or 21
+                              if ewma_halflife is None).  When used in the bisection,
+                              mean(mu[cluster]) equals the EWMA return of the
+                              equal-weighted cluster, capturing cluster-level momentum
+                              without any BL model.
     """
     cache: Dict = {}
     prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
@@ -1083,7 +1190,17 @@ def vol_hrp_bl_strategy(
     def _cov_fn(window: np.ndarray) -> np.ndarray:
         data = _ewma_pseudo(window, ewma_halflife) if ewma_halflife is not None else window
         cov = cov_fn(data)
-        cache["mu"] = mu_black_litterman(window, cov, delta=delta, tau=tau)
+        if mu_method == "bl":
+            effective_tau = 1.0 / window.shape[0] if adaptive_tau else tau
+            w_mkt_bl = prev_w["w"] if (bl_prior_from_prev_w and prev_w["w"] is not None) else None
+            cache["mu"] = mu_black_litterman(window, cov, delta=delta, tau=effective_tau, w_mkt=w_mkt_bl)
+        elif mu_method == "hist":
+            cache["mu"] = window.mean(axis=0)
+        elif mu_method == "cluster_momentum":
+            hl = ewma_halflife if ewma_halflife is not None else 21.0
+            cache["mu"] = _ewma_mean(window, hl)
+        else:
+            raise ValueError(f"mu_method={mu_method!r}; expected 'bl', 'hist', or 'cluster_momentum'")
         return cov
 
     def _alloc_fn(cov: np.ndarray) -> np.ndarray:
@@ -1096,8 +1213,17 @@ def vol_hrp_bl_strategy(
                                lam=lam,
                                turnover_penalty=turnover_penalty,
                                weight_reg=weight_reg,
-                               w_prev=prev_w["w"])
-        prev_w["w"] = w
+                               w_prev=prev_w["w"],
+                               sharpe_shrink=sharpe_shrink,
+                               regime_lam=regime_lam,
+                               lam_base=lam_base,
+                               lam_scale=lam_scale,
+                               lam_corr=lam_corr)
+        prev_w["w"] = w  # store pre-scaling direction for BL prior & turnover
+        if vol_target is not None:
+            port_vol = float(np.sqrt(max(float(w @ cov @ w) * 252, 1e-12)))
+            if port_vol > 1e-12:
+                w = w * (vol_target / port_vol)
         return w
 
     return _cov_fn, _alloc_fn
@@ -1385,20 +1511,26 @@ def make_crsp_strategies(linkage_method: str = "single",
     def hrp_with(cov_fn):
         return cov_fn, lambda c: hrp_weights(c, linkage_method=linkage_method)
 
-    # topdown tree, ERC not needed, lam: VR-CA blend 25%, ewma hl = rebalance time, NLS shrinkage, BL signal,, L1 pen 5%, L2 pen 10%
-    def vb_hrp_with(cov_fn, cov_shrinkage=None, tree_method="topdown", lam=0.25, ewma_halflife=21, turnover_penalty=0.05, weight_reg=0.1):
+    # topdown tree (bottom up doesnt work), ERC not needed, lam: VR-CA blend 25%, ewma hl = rebalance time, NLS shrinkage, BL signal, L1 pen 5%, L2 pen 10%, regime (based on cov matrix) dependent lam: VR-CA scaling
+    def vb_hrp_with(cov_fn, cov_shrinkage=cov_nonlinear_shrink, mu_method="bl", tree_method="topdown", lam=0.2, lam_corr=0.2, ewma_halflife=21,
+                    turnover_penalty=0.05, weight_reg=0.10, regime_lam=True, vol_target=None):
         return vol_hrp_bl_strategy(cov_fn, cov_shrinkage=cov_shrinkage,
-                                    tree_method=tree_method, 
+                                    tree_method=tree_method,
                                     lam=lam,
                                     ewma_halflife=ewma_halflife,
                                     turnover_penalty=turnover_penalty,
-                                    weight_reg=weight_reg)
-
+                                    weight_reg=weight_reg,
+                                    regime_lam=regime_lam,
+                                    vol_target=vol_target,
+                                    lam_corr=lam_corr,
+                                    mu_method=mu_method)
+    # try historical mean for mu, then move to EWA
     strategies: StrategyMap = {
-        "Bets HRP":                     hrp_with(cov_nonlinear_shrink),
-            "Best GMV":                     min_var_with(cov_nonlinear_shrink),
-        "HMVA":                         vb_hrp_with(cov_nonlinear_shrink),
-        "EW":                           (cov_sample, equal_weights),
+        "Bets HRP":                          hrp_with(cov_sample),
+        #"Best GMV":                         min_var_with(cov_sample),
+        "HMVA":                              vb_hrp_with(cov_nonlinear_shrink),
+        "HMVA-0.10":                              vb_hrp_with(cov_nonlinear_shrink, vol_target=0.04),
+        "EW":                                (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
         strategies["SPY-K"] = (cov_sample, make_spyk_allocator(market_cap_wide))

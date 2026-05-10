@@ -549,7 +549,7 @@ more aggressively. The eigenvectors are unchanged.
 
 **Why**: the sample covariance eigenvalues are systematically biased —
 large ones are too large and small ones too small (Marčenko-Pastur
-law). In the high-dimensional regime (N/T ≈ 1 or 2) this bias inflates
+law). In the high-dimensional regime (N/T ≈ 1  or 2) this bias inflates
 estimated portfolio risk for high-vol assets and deflates it for
 low-vol assets, making risk allocations unreliable. NLS corrects every
 eigenvalue optimally under squared Frobenius loss, giving the best
