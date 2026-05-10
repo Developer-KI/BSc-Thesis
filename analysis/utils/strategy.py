@@ -817,6 +817,10 @@ def vol_hrp_bl_strategy(
     lam_base: float = 0.0,
     lam_scale: float = 0.5,
     lam_corr: float = 0.0,
+    cash_buffer: bool = False,
+    crisis_threshold: float = 0.5,
+    cash_sensitivity: float = 1.0,
+    min_exposure: float = 0.5,
 ) -> Tuple[Callable, Callable]:
     """
     Factory: (cov_fn, alloc_fn) pair for vol-balanced HRP with BL returns.
@@ -856,6 +860,20 @@ def vol_hrp_bl_strategy(
         its docstring for the CV-vol + avg-corr formula.
         regime_lam=False (default) = fixed lam_cov; lam_corr=0.0 (default) disables
         the average-correlation term even when regime_lam=True.
+    cash_buffer : when True, de-levers the portfolio in stressed regimes using
+        the cross-sectional CV of asset volatilities as a regime signal.  Applied
+        after vol_target (if set) and after prev_w is stored, so the directional
+        weights and turnover penalty are unaffected.  False (default) = no scaling.
+    crisis_threshold : CV_vol level above which de-leveraging activates.  Below
+        this value the portfolio is fully invested.  Default 0.5 (typical
+        S&P 500 calm range is 0.30–0.45; crisis exceeds 0.60).
+    cash_sensitivity : rate of de-leveraging above the threshold.
+        exposure = max(1 - cash_sensitivity × (CV_vol - crisis_threshold), min_exposure)
+        With sensitivity=1.0 and threshold=0.5: CV_vol=0.7 → 80% invested,
+        CV_vol=0.9 → 60% invested (floored at min_exposure).  Default 1.0.
+    min_exposure : floor on total invested exposure.  The portfolio will never
+        be scaled below this fraction regardless of how high CV_vol rises.
+        Default 0.5 (never go below 50% invested).
     """
     cache: Dict = {}
     prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
@@ -886,6 +904,14 @@ def vol_hrp_bl_strategy(
             port_vol = float(np.sqrt(max(float(w @ cov @ w) * 252, 1e-12)))
             if port_vol > 1e-12:
                 w = w * (vol_target / port_vol)
+        if cash_buffer:
+            vols = np.sqrt(np.maximum(np.diag(cov), 0.0))
+            mean_vol = float(vols.mean())
+            cv_vol = float(vols.std()) / mean_vol if mean_vol > 1e-12 else 0.0
+            if cv_vol > crisis_threshold:
+                exposure = max(1.0 - cash_sensitivity * (cv_vol - crisis_threshold),
+                               min_exposure)
+                w = w * exposure
         return w
 
     return _cov_fn, _alloc_fn
@@ -993,7 +1019,7 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
 
     def vb_hrp_with(cov_fn, cov_shrinkage=None, adaptive_tau=True, tree_method="topdown",
                     lam_cov=0.2, lam_corr=0.2, ewma_halflife=21,
-                    turnover_penalty=0.05, weight_reg=0.10, regime_lam=True, vol_target=None):
+                    turnover_penalty=0.05, weight_reg=0.10, regime_lam=True, vol_target=None, cash_buffer=True):
         return vol_hrp_bl_strategy(cov_fn, cov_shrinkage=cov_shrinkage,
                                     adaptive_tau=adaptive_tau,
                                     tree_method=tree_method,
@@ -1003,7 +1029,8 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
                                     turnover_penalty=turnover_penalty,
                                     weight_reg=weight_reg,
                                     regime_lam=regime_lam,
-                                    vol_target=vol_target,)
+                                    vol_target=vol_target,
+                                    cash_buffer=cash_buffer)
 
     strategies: StrategyMap = {
         "HMVA":      vb_hrp_with(cov_nonlinear_shrink),

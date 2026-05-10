@@ -63,7 +63,7 @@ END_DATE = "2025-01-01"
 TOP_K = 100
 
 # Lookbacks to sweep: 1y, 2y
-LOOKBACKS = (252, 504)
+LOOKBACKS = (126, 252, 504)
 REBALANCE = 21
 
 # Portfolio frinction
