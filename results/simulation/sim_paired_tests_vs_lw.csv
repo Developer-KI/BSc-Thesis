@@ -1,9 +1,0 @@
-challenger,statistic,p_value,regime,N_T_ratio
-NLS,0.0,8.881784197001252e-16,dispersed_eigs,2.52
-POET,1157.0,0.9999999818836525,dispersed_eigs,2.52
-NLS,0.0,8.881784197001252e-16,dispersed_eigs,5.04
-POET,1256.0,0.9999999999997753,dispersed_eigs,5.04
-NLS,0.0,8.881784197001252e-16,factor_sparse,2.52
-POET,0.0,8.881784197001252e-16,factor_sparse,2.52
-NLS,0.0,8.881784197001252e-16,factor_sparse,5.04
-POET,0.0,8.881784197001252e-16,factor_sparse,5.04
