@@ -56,7 +56,7 @@ def main(argv: List[str] = None) -> None:
     p.add_argument("--lookback", type=int, default=LOOKBACK)
     p.add_argument("--rebalance", type=int, default=REBALANCE)
     p.add_argument("--cost-bps", type=float, default=COST_BPS)
-    p.add_argument("--out", default="results")
+    p.add_argument("--out", default="results/backtest")
     args = p.parse_args(argv)
 
     np.random.seed(42)

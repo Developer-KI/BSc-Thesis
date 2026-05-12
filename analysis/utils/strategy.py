@@ -271,52 +271,41 @@ def _cov_to_corr(cov: np.ndarray) -> np.ndarray:
 # =============================================================================
 # Return estimation
 # =============================================================================
-def mu_black_litterman(
+def mu_BL_momentum(
     window: np.ndarray,
     cov: np.ndarray,
-    delta: float = 2.5,
-    tau: float = 0.05,
     w_mkt: Optional[np.ndarray] = None,
     skip_days: int = 21,
 ) -> np.ndarray:
     """
-    Black-Litterman posterior expected returns via PyPortfolioOpt.
+    Black-Litterman posterior expected returns (from-scratch implementation).
 
-    Prior:  π = δ Σ w_mkt  (market-cap weighted when w_mkt is supplied;
-            equal-weight proxy when w_mkt is None).
+    Prior:  π = w_mkt (market-cap weights when supplied; equal weights 1/N otherwise).
     Views:  one absolute view per asset, Q = skip-month momentum signal
             (mean daily return over window[:-skip_days], omitting the most
             recent `skip_days` to avoid short-term reversal bias per the
-            Jegadeesh-Titman (1993) convention).  Ω = default (∝ τΣ).
-    Falls back to the equilibrium π on any failure.
+            Jegadeesh-Titman (1993) convention)
+    P = I_N (absolute views), Ω = τ · diag(Σ)  (proportional uncertainty)
+
+    With P = I and Ω = τ·diag(Σ), τ cancels analytically and the master
+    formula (He & Litterman 1999) reduces to:
+        μ = π + Σ (Σ + D)⁻¹ (Q − π),   D = diag(Σ)
+    solved via a linear system for numerical stability.
+
+    Falls back to π on any numerical failure.
     """
-    from pypfopt.black_litterman import BlackLittermanModel
-
     T, N = window.shape
-    assets = list(range(N))
-    cov_df = pd.DataFrame(cov, index=assets, columns=assets)
 
-    if w_mkt is None:
-        pi_arg: object = "equal"
-        pi_fallback = np.ones(N) / N
-    else:
-        pi_arg = pd.Series(w_mkt, index=assets)
-        pi_fallback = w_mkt
+    pi = np.ones(N) / N if w_mkt is None else np.asarray(w_mkt, dtype=float)
 
     signal_window = window[:-skip_days] if skip_days > 0 and T > skip_days else window
-    absolute_views = dict(zip(assets, signal_window.mean(axis=0)))
+    Q = signal_window.mean(axis=0)
 
     try:
-        bl = BlackLittermanModel(
-            cov_matrix=cov_df,
-            pi=pi_arg,
-            absolute_views=absolute_views,
-            risk_aversion=delta,
-            tau=tau,
-        )
-        return bl.bl_returns().to_numpy()
-    except Exception:
-        return delta * cov @ pi_fallback
+        D = np.diag(np.maximum(np.diag(cov), 1e-12))
+        return pi + cov @ np.linalg.solve(cov + D, Q - pi)
+    except np.linalg.LinAlgError:
+        return pi
 
 # =============================================================================
 # PORTFOLIO ALLOCATORS
@@ -376,93 +365,6 @@ def min_var_weights(cov: np.ndarray) -> np.ndarray:
     return w / w.sum() if w.sum() > 0 else x0
 
 
-def max_sharpe_weights(cov: np.ndarray,
-                       mu: np.ndarray,
-                       rf: float = 0.0) -> np.ndarray:
-    """
-    Long-only maximum-Sharpe (tangency) portfolio via SLSQP.
-
-        max  (w'μ - rf) / sqrt(w'Σw)   s.t.  sum(w)=1,  0 <= w_i <= 1
-
-    Falls back to equal-weight if the excess-return vector has no positive
-    entries (all assets dominated by the risk-free rate) or if the solver
-    fails to converge.
-    """
-    n = cov.shape[0]
-    cov_pd = _ensure_pd(cov)
-    mu_excess = np.asarray(mu, dtype=float) - rf
-    x0 = np.ones(n) / n
-
-    if mu_excess.max() <= 0.0:
-        return x0
-
-    def neg_sharpe(w: np.ndarray) -> float:
-        port_ret = float(w @ mu_excess)
-        port_vol = float(np.sqrt(max(float(w @ cov_pd @ w), 1e-16)))
-        return -port_ret / port_vol
-
-    def neg_sharpe_grad(w: np.ndarray) -> np.ndarray:
-        pr = float(w @ mu_excess)
-        var = float(w @ cov_pd @ w)
-        vol = float(np.sqrt(max(var, 1e-16)))
-        d_pr = mu_excess
-        d_vol = (cov_pd @ w) / vol
-        return -(d_pr * vol - pr * d_vol) / (vol ** 2)
-
-    cons = [{"type": "eq", "fun": lambda w: w.sum() - 1.0,
-             "jac": lambda w: np.ones(n)}]
-    bnds = [(0.0, 1.0)] * n
-    res = minimize(neg_sharpe, x0, jac=neg_sharpe_grad, method="SLSQP",
-                   bounds=bnds, constraints=cons,
-                   options={"maxiter": 300, "ftol": 1e-10})
-    if not res.success:
-        return x0
-    w = np.maximum(res.x, 0.0)
-    return w / w.sum() if w.sum() > 0 else x0
-
-
-def max_sharpe_strategy(
-    cov_fn: Callable,
-    rf: float = 0.0,
-    delta: float = 2.5,
-    tau: float = 0.05,
-    ewma_halflife: Optional[float] = None,
-    adaptive_tau: bool = True,
-    skip_days: int = 0,
-) -> Tuple[Callable, Callable]:
-    """
-    Factory: (cov_fn, alloc_fn) pair for the long-only max-Sharpe portfolio.
-
-    Expected returns are estimated with Black-Litterman (same setup as HMVA):
-    prior = δΣw_eq, views = skip-month momentum.  The covariance estimator
-    can optionally use EWMA pseudo-returns.
-
-    Parameters
-    ----------
-    cov_fn        : base covariance estimator, e.g. cov_sample.
-    rf            : annual risk-free rate.
-    delta, tau    : BL risk-aversion and confidence parameters.
-    ewma_halflife : optional EWMA half-life (trading days) for front-weighting.
-    adaptive_tau  : use tau = 1/T at each rebalance (theoretically motivated).
-    skip_days     : most-recent days excluded from the BL momentum signal.
-    """
-    cache: Dict = {}
-
-    def _cov_fn(window: np.ndarray) -> np.ndarray:
-        data = _ewma_pseudo(window, ewma_halflife) if ewma_halflife is not None else window
-        cov = cov_fn(data)
-        cache["window"] = window
-        return cov
-
-    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
-        window = cache.get("window", np.zeros((1, cov.shape[0])))
-        effective_tau = 1.0 / window.shape[0] if adaptive_tau else tau
-        mu = mu_black_litterman(window, cov, delta=delta, tau=effective_tau,
-                                skip_days=skip_days)
-        return max_sharpe_weights(cov, mu, rf=rf)
-
-    return _cov_fn, _alloc_fn
-
 
 def max_utility_weights(cov: np.ndarray,
                         mu: np.ndarray,
@@ -509,11 +411,6 @@ def max_utility_weights(cov: np.ndarray,
 def max_utility_strategy(
     cov_fn: Callable,
     gamma: float = 2.5,
-    delta: float = 2.5,
-    tau: float = 0.05,
-    ewma_halflife: Optional[float] = None,
-    adaptive_tau: bool = True,
-    skip_days: int = 0,
     turnover_penalty: float = 0.0,
 ) -> Tuple[Callable, Callable]:
     """
@@ -524,26 +421,19 @@ def max_utility_strategy(
     ----------
     cov_fn           : base covariance estimator.
     gamma            : risk-aversion coefficient (default 2.5).
-    delta, tau       : BL risk-aversion and confidence parameters.
-    ewma_halflife    : optional EWMA half-life (trading days).
-    adaptive_tau     : use tau = 1/T at each rebalance.
-    skip_days        : most-recent days excluded from the BL momentum signal.
     turnover_penalty : λ for the L1 turnover penalty λ‖w_t − w_{t−1}‖₁
                        (default 0 = no penalty).
     """
     cache: Dict = {}
 
     def _cov_fn(window: np.ndarray) -> np.ndarray:
-        data = _ewma_pseudo(window, ewma_halflife) if ewma_halflife is not None else window
-        cov = cov_fn(data)
+        cov = cov_fn(window)
         cache["window"] = window
         return cov
 
     def _alloc_fn(cov: np.ndarray) -> np.ndarray:
         window = cache.get("window", np.zeros((1, cov.shape[0])))
-        effective_tau = 1.0 / window.shape[0] if adaptive_tau else tau
-        mu = mu_black_litterman(window, cov, delta=delta, tau=effective_tau,
-                                skip_days=skip_days)
+        mu = mu_BL_momentum(window, cov)
         w = max_utility_weights(cov, mu, gamma=gamma,
                                 turnover_penalty=turnover_penalty,
                                 w_prev=cache.get("w_prev"))
@@ -989,17 +879,14 @@ def vol_hrp_bl_weights(cov: np.ndarray,
 def vol_hrp_bl_strategy(
     cov_fn: Callable,
     rf: float = 0.0,
-    delta: float = 2.5,
-    tau: float = 0.05,
     bf_threshold: int = 10,
     cov_shrinkage: Optional[str] = None,
     tree_method: str = "topdown",
-    lam_cov: float = 1.0,
+    lam_cov: float = 0.25,
     ewma_halflife: Optional[float] = None,
     turnover_penalty: float = 0.0,
     weight_reg: float = 0.0,
     vol_target: Optional[float] = None,
-    adaptive_tau: bool = True,
     regime_lam: bool = False,
     lam_base: float = 0.0,
     lam_scale: float = 0.5,
@@ -1008,7 +895,6 @@ def vol_hrp_bl_strategy(
     crisis_threshold: float = 0.5,
     cash_sensitivity: float = 1.0,
     min_exposure: float = 0.5,
-    skip_days: int = 0,
 ) -> Tuple[Callable, Callable]:
     """
     Factory: (cov_fn, alloc_fn) pair for vol-balanced HRP with BL returns.
@@ -1017,7 +903,6 @@ def vol_hrp_bl_strategy(
     ----------
     cov_fn        : base covariance estimator, e.g. cov_sample.
     rf            : annual risk-free rate passed to vol_hrp_bl_weights.
-    delta, tau    : BL risk-aversion and confidence parameters.
     bf_threshold  : exhaustive-search threshold (topdown only).
     cov_shrinkage : optional secondary shrinkage inside alloc_fn.
     tree_method   : "topdown" | "bottomup".
@@ -1040,18 +925,10 @@ def vol_hrp_bl_strategy(
         > 1) or de-levered (weights sum < 1).  prev_w always stores the
         pre-scaling directional weights so the turnover penalty and BL prior
         are unaffected by the leverage level.  None (default) = no scaling.
-    adaptive_tau  : when True, overrides tau with 1/T at each rebalance, where
-        T is the lookback window length.  Longer windows give more confidence
-        to historical-mean views; shorter windows lean on the equilibrium prior.
-        Theoretically motivated: BL derivation sets tau ~ 1/T.  False = fixed tau.
     regime_lam, lam_base, lam_scale, lam_corr : passed to vol_hrp_bl_weights; see
         its docstring for the CV-vol + avg-corr formula.
         regime_lam=False (default) = fixed lam_cov; lam_corr=0.0 (default) disables
         the average-correlation term even when regime_lam=True.
-    skip_days : number of most-recent trading days excluded from the momentum
-        signal used as BL views (default 21, i.e. skip last month).  Follows
-        the Jegadeesh-Titman convention to avoid short-term reversal bias.
-        Set to 0 to restore the original sample-mean views.
     cash_buffer : when True, de-levers the portfolio in stressed regimes using
         the cross-sectional CV of asset volatilities as a regime signal.  Applied
         after vol_target (if set) and after prev_w is stored, so the directional
@@ -1079,9 +956,7 @@ def vol_hrp_bl_strategy(
     def _alloc_fn(cov: np.ndarray) -> np.ndarray:
         window = cache.get("window", np.zeros((1, cov.shape[0])))
 
-        effective_tau = 1.0 / window.shape[0] if adaptive_tau else tau
-        mu = mu_black_litterman(window, cov, delta=delta, tau=effective_tau,
-                                skip_days=skip_days)
+        mu = mu_BL_momentum(window, cov)
 
         w = vol_hrp_bl_weights(cov, mu, rf=rf,
                                bf_threshold=bf_threshold,
@@ -1214,11 +1089,12 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
         return max_utility_strategy(cov_fn, gamma=risk_aversion, turnover_penalty=turnover_penalty)
     
     def vb_hrp_with(cov_fn, cov_shrinkage=None, tree_method="topdown",
-                    lam_cov=0.2, lam_corr=0.05, ewma_halflife=21, regime_lam=True,
-                    turnover_penalty=0.25, weight_reg=0.00, vol_target=None):
+                    regime_lam=True, lam_base=0.0, lam_scale=0.4, lam_corr=0.20, 
+                    ewma_halflife=21, turnover_penalty=0.25, weight_reg=0.00, vol_target=None):
         return vol_hrp_bl_strategy(cov_fn, cov_shrinkage=cov_shrinkage,
                                     tree_method=tree_method,
-                                    lam_cov=lam_cov,
+                                    lam_base=lam_base,
+                                    lam_scale=lam_scale,
                                     lam_corr=lam_corr,
                                     ewma_halflife=ewma_halflife,
                                     turnover_penalty=turnover_penalty,

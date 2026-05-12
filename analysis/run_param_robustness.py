@@ -20,9 +20,9 @@ Parameters swept and their grids:
   lam_scale        [0.1, 0.2, 0.3, 0.5, 0.7, 1.0]              slope on CV_vol for λ_eff
   lam_corr         [0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50]   slope on avg_corr for λ_eff
 
-Note: delta (BL risk-aversion) is intentionally excluded.  With adaptive_tau=True
-(tau = 1/T ≈ 0.004 at lookback=252), the BL posterior is dominated by the momentum
-views and delta's effect on the equilibrium prior is negligible at typical lookbacks.
+Note: BL risk-aversion (delta) and confidence (tau) are excluded: with P=I and
+Ω = τ·diag(Σ), both parameters cancel analytically from the posterior formula,
+so they have no effect on the output.
 
 Outputs in results/param_sweep/:
   sensitivity.csv              full results (param, value, sharpe, ci_low, ci_high, ...)
@@ -72,31 +72,36 @@ REBALANCE  = 21
 # ── thesis defaults ────────────────────────────────────────────────────────────
 DEFAULTS = dict(
     ewma_halflife    = 21,
-    weight_reg       = 0.10,
-    turnover_penalty = 0.05,
-    lam_scale        = 0.5,
-    lam_corr         = 0.2,
+    weight_reg       = 0.00,
+    turnover_penalty = 0.25,
+    lam_base         = -0.05,
+    lam_scale        = 0.4,
+    lam_corr         = 0.20,
 )
 
 # ── parameter grids ────────────────────────────────────────────────────────────
 PARAM_GRIDS: Dict[str, List] = {
     "ewma_halflife":    [5, 10, 14, 21, 30, 42, 63],
-    "weight_reg":       [0.0, 0.03, 0.05, 0.10, 0.15, 0.20, 0.30],
-    "turnover_penalty": [0.0, 0.01, 0.02, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40],
-    "lam_scale":        [0.1, 0.2, 0.3, 0.5, 0.7, 1.0],
-    "lam_corr":         [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.50, 0.60],
+    "weight_reg":       [0.0, 0.01, 0.03, 0.05, 0.10, 0.15, 0.20],
+    "turnover_penalty": [0.0, 0.01, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40],
+    "lam_base":         [-0.10, -0.05, 0.0, 0.05, 0.10, 0.15, 0.20, 0.25],
+    "lam_scale":        [0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.45, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00],
+    "lam_corr":         [-0.10, -0.05, 0.0, 0.05, 0.10, 0.15, 0.20, 0.25],
 }
 
 PARAM_LABELS = {
     "ewma_halflife":    "EWMA half-life $h$ (days)",
     "weight_reg":       "L2 blend $\\rho_{L2}$",
     "turnover_penalty": "L1 soft-threshold $\\tau_{L1}$",
-    "lam_scale":        "Regime scale $\\lambda_{\\mathrm{scale}}$",
+    "lam_base":         "Regime cov-intercept $\\lambda_{\\mathrm{cov_base}}$",
+    "lam_scale":        "Regime cov-slope $\\lambda_{\\mathrm{cov_scale}}$",
     "lam_corr":         "Regime corr-slope $\\lambda_{\\mathrm{corr}}$",
 }
 
+# block length for circular bootstrap (≈ 1 month)
+BLOCK          = 21   
+# backtest bootstrap lenght (≈ 45 years)
 N_BOOT_DEFAULT = 500
-BLOCK          = 21   # block length for circular bootstrap (≈ 1 month)
 
 
 # ── bootstrap helpers ──────────────────────────────────────────────────────────
@@ -281,7 +286,7 @@ def main(argv=None):
     p.add_argument("--n-boot",       type=int,   default=N_BOOT_DEFAULT,
                    help="Bootstrap replications per config (default 500)")
     p.add_argument("--params",       default=None,
-                   help="Comma-separated subset of parameters to sweep, e.g. delta,tau")
+                   help="Comma-separated subset of parameters to sweep, e.g. ewma_halflife,lam_scale")
     p.add_argument("--quick",        action="store_true",
                    help="Shorthand for --n-boot 100 --start 2010-01-01")
     p.add_argument("--out",          default="results/param_robustness")

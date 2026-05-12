@@ -8,22 +8,6 @@ Sweeps the empirical experiment over a configurable grid of:
     lookback    in {252, 504}                     (1 / 2 years)
     cost_bps    in {0, 2, 5, 10}                  (transaction cost levels)
 
-Rebalance frequency is fixed (default = 21 days / monthly).
-
-This is the *companion* to run_crsp.py: run_crsp.py answers
-"do the advanced estimators help?" at the default settings; this script
-answers "is that conclusion robust to the parameter choices?"
-
-Defaults are tuned for ~2-3h on a modern laptop:
-    lookbacks  = 252, 504
-    costs      = 0, 2, 5, 10
-        => 2 x 4 = 8 cells
-
-Speed-up tricks:
-    * The CRSP file is read ONCE at startup and shared across all cells.
-    * --no-apoet skips POET-CV (the runtime bottleneck): ~5x faster.
-    * --strategies filters the strategy set; e.g. drop slow MinVar-NLS.
-
 Outputs in results/crsp_robustness/:
     robustness_long.csv      one row per (cell, strategy)
     robustness_summary.csv   aggregated across cells per strategy
@@ -67,7 +51,7 @@ START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
 
 # Default grid
-DEFAULT_LOOKBACKS = "126, 252, 504"
+DEFAULT_LOOKBACKS = "63, 126, 252, 504"
 DEFAULT_HISTORY = 504
 DEFAULT_COSTS = "0, 2, 5, 10, 20"
 DEFAULT_REBALANCE = 21
@@ -243,7 +227,7 @@ def make_summary_table_plot(summary: pd.DataFrame, outdir: str) -> None:
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(
-        description="HRP × covariance robustness sweep on CRSP S&P 500",
+        description="Cost Robustness of Strategies",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--data", default=DATA_CSV)
@@ -259,7 +243,7 @@ def main(argv=None) -> None:
     p.add_argument("--rebalance", type=int, default=DEFAULT_REBALANCE,
                    help="rebalance frequency in trading days (fixed)")
     p.add_argument("--strategies",
-                   default="EW,SPY-K,HMVA",
+                   default="EW,HMVA",
                    help="comma-separated strategy names to include")
     p.add_argument("--out", default="results/cost_robustness")
     args = p.parse_args(argv)

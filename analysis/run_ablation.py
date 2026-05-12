@@ -5,8 +5,7 @@ Incrementally adds each HMVA component over a standard HRP baseline and
 measures the marginal Sharpe contribution of each stage:
 
   Stage 0   HRP           sample cov | correlation tree | variance bisection
-  +S2       +NLS           NLS cov   | correlation tree | variance bisection
-  +S1       +EWMA          NLS+EWMA  | correlation tree | variance bisection
+  +S1+S2    +NLS+EWMA     NLS+EWMA  | correlation tree | variance bisection
   +S4       +VBTree        NLS+EWMA  | vol-balanced tree (fixed λ) | equal split
   +S3+S5    +BL+Sharpe     NLS+EWMA  | vol-balanced tree (fixed λ) | Sharpe bisection
   +S4*      +Regime        NLS+EWMA  | vol-balanced tree (regime λ) | Sharpe bisection
@@ -54,39 +53,37 @@ COST_BPS   = 0.0
 
 # HMVA baseline hyperparameters (match thesis defaults)
 EWMA_HL       = 21
-# fixed λ used for +VBTree and +BL+Sharpe stages
-LAM_COV_FIXED = 0.2    
-LAM_SCALE     = 0.5
-LAM_CORR      = 0.05
+LAM_COV       = 0.20
+LAM_BASE      = -0.05
+LAM_SCALE     = 0.40
+LAM_CORR      = 0.20
 WEIGHT_REG    = 0.00
 TO_PENALTY    = 0.25
 
 VOL_TARGET  = 0.01
 
-ORDERED_STAGES = ["HRP", "+NLS", "+EWMA", "+VBTree", "+BL+Sharpe", "+Regime", "HMVA", "HMVA + Vol Target"]
+ORDERED_STAGES = ["HRP", "+NLS+EWMA", "+VBTree+Regime", "+BL+Sharpe", "HMVA", "HMVA + Vol Target"]
 STAGE_LABELS   = [
     "HRP\n(baseline)",
-    "+NLS\n(Stage 2)",
-    "+EWMA\n(Stage 1)",
-    "+VBTree\n(Stage 4)",
+    "+NLS+EWMA\n(Stages 1+2)",
+    "+VBTree+Regime\n(Stages 4+4*)",
     "+BL+Sharpe\n(Stages 3+5)",
-    "+Regime λ\n(Stage 4*)",
     "+L2+L1\n(Stage 6)",
-    "+Vol Target\n 1%",
+    "+Vol Target\n(Risk Scale)",
 ]
-COLORS = ["#6c757d", "#5b8dd9", "#3a7abf", "#f0a500", "#e05c2a", "#8e44ad", "#1a7a4a", "#17a2b8"]
+COLORS = ["#6c757d", "#3a7abf", "#f0a500", "#e05c2a", "#1a7a4a", "#17a2b8"]
 
 
 # ── strategy builders ─────────────────────────────────────────────────────────
 
-def _make_vb_equal_alloc(lam_cov: float):
-    """Vol-balanced top-down tree with equal-split bisection (mu = 0)."""
+def _make_vb_regime_alloc():
+    """Vol-balanced top-down tree with regime λ and equal-split bisection (mu = 0)."""
     def alloc_fn(cov: np.ndarray) -> np.ndarray:
         N = cov.shape[0]
         return L.vol_hrp_bl_weights(
             cov, np.zeros(N), rf=0.0,
             weight_reg=0.0, turnover_penalty=0.0,
-            regime_lam=False, lam_cov=lam_cov,
+            regime_lam=True, lam_base=LAM_BASE, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
         )
     return alloc_fn
 
@@ -96,46 +93,37 @@ def make_ablation_strategies() -> L.StrategyMap:
     Return a dict of (cov_fn, alloc_fn) pairs, one per ablation step.
     Each entry adds exactly one HMVA component over the previous.
     """
-    # Stage 3+5: BL returns + Sharpe bisection, fixed λ, no regularisation
-    s35_cov, s35_alloc = L.vol_hrp_bl_strategy(
+    # Stages 3+5: BL returns + Sharpe bisection on regime λ tree, no regularisation
+    s_bl_cov, s_bl_alloc = L.vol_hrp_bl_strategy(
         L.cov_nonlinear_shrink,
         ewma_halflife=EWMA_HL,
-        lam_cov=LAM_COV_FIXED, regime_lam=False,
-        weight_reg=0.0, turnover_penalty=0.0,
-    )
-    # Stage 4* (regime λ): add regime-adaptive tree, no regularisation
-    s4r_cov, s4r_alloc = L.vol_hrp_bl_strategy(
-        L.cov_nonlinear_shrink,
-        ewma_halflife=EWMA_HL,
-        regime_lam=True, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
+        regime_lam=True, lam_base=LAM_BASE, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
         weight_reg=0.0, turnover_penalty=0.0,
     )
     # Stage 6 (full HMVA): add L2 + L1 regularisation
     hmva_cov, hmva_alloc = L.vol_hrp_bl_strategy(
         L.cov_nonlinear_shrink,
         ewma_halflife=EWMA_HL,
-        regime_lam=True, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
+        regime_lam=True, lam_base=LAM_BASE, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
         weight_reg=WEIGHT_REG, turnover_penalty=TO_PENALTY,
     )
     # HMVA-5p: full HMVA + 5 % annualised volatility target (de-levers in calm, levers in stress)
     hmva5p_cov, hmva5p_alloc = L.vol_hrp_bl_strategy(
         L.cov_nonlinear_shrink,
         ewma_halflife=EWMA_HL,
-        regime_lam=True, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
+        regime_lam=True, lam_base=LAM_BASE, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
         weight_reg=WEIGHT_REG, turnover_penalty=TO_PENALTY,
         vol_target=VOL_TARGET,
     )
 
     return {
-        "HRP":        (L.cov_sample,          lambda c: L.hrp_weights(c)),
-        "+NLS":       (L.cov_nonlinear_shrink, lambda c: L.hrp_weights(c)),
-        "+EWMA":      (L.cov_ewa_nls,          lambda c: L.hrp_weights(c)),
-        "+VBTree":    (L.cov_ewa_nls,          _make_vb_equal_alloc(LAM_COV_FIXED)),
-        "+BL+Sharpe": (s35_cov,               s35_alloc),
-        "+Regime":    (s4r_cov,               s4r_alloc),
-        "HMVA":       (hmva_cov,              hmva_alloc),
-        "HMVA + Vol Target":    (hmva5p_cov,            hmva5p_alloc),
-        "EW":         (L.cov_sample,          L.equal_weights),
+        "HRP":               (L.cov_sample,   lambda c: L.hrp_weights(c)),
+        "+NLS+EWMA":         (L.cov_ewa_nls,  lambda c: L.hrp_weights(c)),
+        "+VBTree+Regime":    (L.cov_ewa_nls,  _make_vb_regime_alloc()),
+        "+BL+Sharpe":        (s_bl_cov,       s_bl_alloc),
+        "HMVA":              (hmva_cov,       hmva_alloc),
+        "HMVA + Vol Target": (hmva5p_cov,     hmva5p_alloc),
+        "EW":                (L.cov_sample,   L.equal_weights),
     }
 
 

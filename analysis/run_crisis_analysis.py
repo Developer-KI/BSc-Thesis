@@ -40,10 +40,9 @@ import seaborn as sns
 
 # ── configuration ─────────────────────────────────────────────────────────────
 
-RESULTS_LOOKBACK = 504   # lookback used in the main backtest to load
 RESULTS_DIR      = "results"
 
-STRATEGIES  = ["HMVA", "HRP", "GMV", "EW", "SPY-K"]
+STRATEGIES  = ["HMVA", "HRP-base", "HRP", "MVO-base", "MVO", "EW", "SPY-K"]
 STRAT_COLORS = {
     "HMVA":  "#1a7a4a",
     "HRP":   "#5b8dd9",
@@ -90,12 +89,12 @@ def _compute_period_metrics(daily: pd.DataFrame,
     return pd.DataFrame(rows).T
 
 
-def _load_daily(results_dir: str, lookback: int) -> pd.DataFrame:
-    path = f"{results_dir}/backtest_lb{lookback}/daily_excess_returns.csv"
+def _load_daily(results_dir: str) -> pd.DataFrame:
+    path = f"{results_dir}/backtest/daily_excess_returns.csv"
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"Results file not found: {path}\n"
-            f"Run run_backtest.py --lookbacks {lookback} first."
+            f"Run run_backtest.py first."
         )
     daily = pd.read_csv(path, index_col=0, parse_dates=True)
     present = [c for c in STRATEGIES if c in daily.columns]
@@ -261,14 +260,13 @@ def plot_annual_returns(daily: pd.DataFrame, outdir: str) -> None:
 def main(argv=None):
     p = argparse.ArgumentParser(description="HMVA crisis-period analysis")
     p.add_argument("--results-dir", default=RESULTS_DIR)
-    p.add_argument("--lookback",    type=int, default=RESULTS_LOOKBACK)
     p.add_argument("--out",         default="results/crisis_analysis")
     args = p.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
 
-    print(f"[crisis] loading daily returns from {args.results_dir}/crsp_lb{args.lookback}/ ...")
-    daily = _load_daily(args.results_dir, args.lookback)
+    print(f"[crisis] loading daily returns from {args.results_dir}/backtest/ ...")
+    daily = _load_daily(args.results_dir)
     print(f"[crisis] loaded {len(daily)} days, strategies: {list(daily.columns)}")
     print(f"[crisis] period: {daily.index[0].date()} → {daily.index[-1].date()}")
 
