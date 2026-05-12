@@ -274,29 +274,22 @@ def _cov_to_corr(cov: np.ndarray) -> np.ndarray:
 def mu_BL_momentum(
     window: np.ndarray,
     cov: np.ndarray,
-    w_mkt: Optional[np.ndarray] = None,
     skip_days: int = 21,
 ) -> np.ndarray:
     """
-    Black-Litterman posterior expected returns (from-scratch implementation).
+    Black-Litterman type posterior expected returns
 
-    Prior:  π = w_mkt (market-cap weights when supplied; equal weights 1/N otherwise).
+    Prior:  π = w_ew
     Views:  one absolute view per asset, Q = skip-month momentum signal
-            (mean daily return over window[:-skip_days], omitting the most
-            recent `skip_days` to avoid short-term reversal bias per the
-            Jegadeesh-Titman (1993) convention)
     P = I_N (absolute views), Ω = τ · diag(Σ)  (proportional uncertainty)
+    
+    μ = π + Σ (Σ + diag(Σ))⁻¹ (Q - π) 
 
-    With P = I and Ω = τ·diag(Σ), τ cancels analytically and the master
-    formula (He & Litterman 1999) reduces to:
-        μ = π + Σ (Σ + D)⁻¹ (Q − π),   D = diag(Σ)
-    solved via a linear system for numerical stability.
-
-    Falls back to π on any numerical failure.
+    Falls back to π on any numerical failure
     """
     T, N = window.shape
 
-    pi = np.ones(N) / N if w_mkt is None else np.asarray(w_mkt, dtype=float)
+    pi = np.ones(N) / N
 
     signal_window = window[:-skip_days] if skip_days > 0 and T > skip_days else window
     Q = signal_window.mean(axis=0)
@@ -1088,6 +1081,7 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
     def mvo_with(cov_fn, risk_aversion=2.5, turnover_penalty=0.10):
         return max_utility_strategy(cov_fn, gamma=risk_aversion, turnover_penalty=turnover_penalty)
     
+    # add turnover regime detection (massive opportunity)
     def vb_hrp_with(cov_fn, cov_shrinkage=None, tree_method="topdown",
                     regime_lam=True, lam_base=0.0, lam_scale=0.4, lam_corr=0.20, 
                     ewma_halflife=21, turnover_penalty=0.25, weight_reg=0.00, vol_target=None):
@@ -1104,6 +1098,7 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
 
     strategies: StrategyMap = {
         "HMVA":        vb_hrp_with(cov_nonlinear_shrink),
+        "HMVA-1":      vb_hrp_with(cov_nonlinear_shrink, vol_target=0.04),
         "HRP":         hrp_with(cov_ewa_nls),
         "MVO":         mvo_with(cov_ewa_nls),
         "EW":          (cov_sample, equal_weights),
