@@ -1083,7 +1083,7 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
     
     # add turnover regime detection (massive opportunity)
     def vb_hrp_with(cov_fn, cov_shrinkage=None, tree_method="topdown",
-                    regime_lam=True, lam_base=0.0, lam_scale=0.4, lam_corr=0.20, 
+                    regime_lam=True, lam_base=-0.05, lam_scale=0.4, lam_corr=0.20, 
                     ewma_halflife=21, turnover_penalty=0.25, weight_reg=0.00, vol_target=None):
         return vol_hrp_bl_strategy(cov_fn, cov_shrinkage=cov_shrinkage,
                                     tree_method=tree_method,
