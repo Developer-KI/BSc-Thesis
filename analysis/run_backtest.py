@@ -22,6 +22,10 @@ DATE_COL = "DlyCalDt"
 PRICE_COL = "DlyClose"
 RET_COL = "DlyRet"
 
+# How to switch between them and why do they perform differently. Whats the root cause?
+#1980 - 2002-06 min vol vb tree wins absolutely
+#2000 - 2025 max sharpe vb tree wins absolutely
+
 START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
 TOP_K = 100
@@ -122,6 +126,9 @@ def main(argv: List[str] = None) -> None:
 
     L.plot_backtest_results(daily, weights, metrics, outdir,
                             title_suffix=f"(CRSP lookback={args.lookback})")
+
+    L.plot_holdings_concentration(weights, outdir,
+                                  title_suffix=f"(CRSP lookback={args.lookback})")
 
     print(f"\n[done] results at {outdir}/")
 
