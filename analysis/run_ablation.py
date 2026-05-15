@@ -8,8 +8,7 @@ measures the marginal Sharpe contribution of each stage:
   +S1+S2    +NLS+EWMA     NLS+EWMA  | correlation tree | variance bisection
   +S4       +VBTree        NLS+EWMA  | vol-balanced tree (fixed λ) | equal split
   +S3+S5    +BL+Sharpe     NLS+EWMA  | vol-balanced tree (fixed λ) | Sharpe bisection
-  +S4*      +Regime        NLS+EWMA  | vol-balanced tree (regime λ) | Sharpe bisection
-  +S6       HMVA           NLS+EWMA  | vol-balanced tree (regime λ) | Sharpe bisection | L2+L1
+  +S6       HMVA           NLS+EWMA  | vol-balanced tree (fixed λ) | Sharpe bisection | L2+L1
 
 Outputs in results/ablation/:
   metrics.csv          full performance metrics per stage
@@ -53,37 +52,28 @@ COST_BPS   = 0.0
 
 # HMVA baseline hyperparameters (match thesis defaults)
 EWMA_HL       = 21
-LAM_COV       = 0.20
-LAM_BASE      = -0.05
-LAM_SCALE     = 0.40
-LAM_CORR      = 0.20
-WEIGHT_REG    = 0.00
-TO_PENALTY    = 0.25
+LAM_COV       = 0.25
 
-VOL_TARGET  = 0.01
-
-ORDERED_STAGES = ["HRP", "+NLS+EWMA", "+VBTree+Regime", "+BL+Sharpe", "HMVA", "HMVA + Vol Target"]
+ORDERED_STAGES = ["HRP", "+NLS+EWMA", "+VBTree", "+BL+Sharpe", "HMVA"]
 STAGE_LABELS   = [
     "HRP\n(baseline)",
     "+NLS+EWMA\n(Stages 1+2)",
-    "+VBTree+Regime\n(Stages 4+4*)",
+    "+VBTree\n(Stage 4)",
     "+BL+Sharpe\n(Stages 3+5)",
-    "+L2+L1\n(Stage 6)",
-    "+Vol Target\n(Risk Scale)",
+    "+KF Smoother\n(Stage 6)",
 ]
-COLORS = ["#6c757d", "#3a7abf", "#f0a500", "#e05c2a", "#1a7a4a", "#17a2b8"]
+COLORS = ["#6c757d", "#3a7abf", "#f0a500", "#e05c2a", "#1a7a4a"]
 
 
 # ── strategy builders ─────────────────────────────────────────────────────────
 
-def _make_vb_regime_alloc():
-    """Vol-balanced top-down tree with regime λ and equal-split bisection (mu = 0)."""
+def _make_vb_fixed_alloc():
+    """Vol-balanced top-down tree with fixed lam_cov and vol bisection (mu = 0)."""
     def alloc_fn(cov: np.ndarray) -> np.ndarray:
         N = cov.shape[0]
         return L.vol_hrp_bl_weights(
             cov, np.zeros(N), rf=0.0,
-            weight_reg=0.0, turnover_penalty=0.0,
-            regime_lam=True, lam_base=LAM_BASE, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
+            lam_cov=LAM_COV, bisect_method="vol",
         )
     return alloc_fn
 
@@ -93,37 +83,27 @@ def make_ablation_strategies() -> L.StrategyMap:
     Return a dict of (cov_fn, alloc_fn) pairs, one per ablation step.
     Each entry adds exactly one HMVA component over the previous.
     """
-    # Stages 3+5: BL returns + Sharpe bisection on regime λ tree, no regularisation
+    # BL returns + Sharpe bisection
     s_bl_cov, s_bl_alloc = L.vol_hrp_bl_strategy(
         L.cov_nonlinear_shrink,
         ewma_halflife=EWMA_HL,
-        regime_lam=True, lam_base=LAM_BASE, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
-        weight_reg=0.0, turnover_penalty=0.0,
+        lam_cov=LAM_COV,
     )
-    # Stage 6 (full HMVA): add L2 + L1 regularisation
+    # Add KF weight smoother
     hmva_cov, hmva_alloc = L.vol_hrp_bl_strategy(
         L.cov_nonlinear_shrink,
         ewma_halflife=EWMA_HL,
-        regime_lam=True, lam_base=LAM_BASE, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
-        weight_reg=WEIGHT_REG, turnover_penalty=TO_PENALTY,
-    )
-    # HMVA-5p: full HMVA + 5 % annualised volatility target (de-levers in calm, levers in stress)
-    hmva5p_cov, hmva5p_alloc = L.vol_hrp_bl_strategy(
-        L.cov_nonlinear_shrink,
-        ewma_halflife=EWMA_HL,
-        regime_lam=True, lam_base=LAM_BASE, lam_scale=LAM_SCALE, lam_corr=LAM_CORR,
-        weight_reg=WEIGHT_REG, turnover_penalty=TO_PENALTY,
-        vol_target=VOL_TARGET,
+        lam_cov=LAM_COV,
+        kf_tp=True,
     )
 
     return {
-        "HRP":               (L.cov_sample,   lambda c: L.hrp_weights(c)),
-        "+NLS+EWMA":         (L.cov_ewa_nls,  lambda c: L.hrp_weights(c)),
-        "+VBTree+Regime":    (L.cov_ewa_nls,  _make_vb_regime_alloc()),
-        "+BL+Sharpe":        (s_bl_cov,       s_bl_alloc),
-        "HMVA":              (hmva_cov,       hmva_alloc),
-        "HMVA + Vol Target": (hmva5p_cov,     hmva5p_alloc),
-        "EW":                (L.cov_sample,   L.equal_weights),
+        "HRP":        (L.cov_sample,  lambda c: L.hrp_weights(c)),
+        "+NLS+EWMA":  (L.cov_ewa_nls, lambda c: L.hrp_weights(c)),
+        "+VBTree":    (L.cov_ewa_nls, _make_vb_fixed_alloc()),
+        "+BL+Sharpe": (s_bl_cov,      s_bl_alloc),
+        "HMVA":       (hmva_cov,      hmva_alloc),
+        "EW":         (L.cov_sample,  L.equal_weights),
     }
 
 
@@ -184,15 +164,10 @@ def plot_drawdowns(daily: pd.DataFrame, outdir: str) -> None:
 def plot_sharpe_bars(metrics: pd.DataFrame, outdir: str) -> None:
     sharpes = [float(metrics.loc[s, "Sharpe"]) for s in ORDERED_STAGES]
     deltas  = [np.nan] + [sharpes[i] - sharpes[i - 1] for i in range(1, len(sharpes))]
-    # index of the vol-target variant (qualitatively different from additive stages)
-    vt_idx  = ORDERED_STAGES.index("HMVA + Vol Target")
 
     fig, ax = plt.subplots(figsize=(12, 5))
     bars = ax.bar(range(len(ORDERED_STAGES)), sharpes,
                   color=COLORS, edgecolor="black", lw=0.7, zorder=3)
-    # hatch the vol-target bar to visually distinguish it as a variant
-    bars[vt_idx].set_hatch("//")
-    bars[vt_idx].set_edgecolor("black")
 
     for bar, d in zip(bars, deltas):
         if not np.isnan(d):
@@ -200,9 +175,6 @@ def plot_sharpe_bars(metrics: pd.DataFrame, outdir: str) -> None:
             ax.text(bar.get_x() + bar.get_width() / 2,
                     bar.get_height() + 0.004,
                     f"{sign}{d:.3f}", ha="center", va="bottom", fontsize=9)
-
-    # separator line between HMVA and HMVA-5p
-    ax.axvline(vt_idx - 0.5, color="#555555", ls=":", lw=1.2)
 
     ew_sr = float(metrics.loc["EW", "Sharpe"])
     ax.axhline(ew_sr, color="gray", ls="--", lw=1.2, label=f"EW = {ew_sr:.3f}")
@@ -213,10 +185,6 @@ def plot_sharpe_bars(metrics: pd.DataFrame, outdir: str) -> None:
     ax.legend(fontsize=9)
     ax.set_ylim(0, max(sharpes) * 1.18)
     ax.yaxis.grid(True, lw=0.4, zorder=0)
-    ax.annotate("← allocation stages", xy=(vt_idx - 1, max(sharpes) * 1.12),
-                ha="right", fontsize=8, color="#555555")
-    ax.annotate("risk-scaling →", xy=(vt_idx + 0.1, max(sharpes) * 1.12),
-                ha="left", fontsize=8, color="#555555")
     plt.tight_layout()
     plt.savefig(f"{outdir}/sharpe_bars.png", dpi=150)
     plt.close()
@@ -225,38 +193,18 @@ def plot_sharpe_bars(metrics: pd.DataFrame, outdir: str) -> None:
 def plot_waterfall(sharpe_delta: pd.DataFrame, outdir: str) -> None:
     labels   = list(sharpe_delta["stage"])
     marginal = list(sharpe_delta["marginal_delta"])
-    vt_idx   = labels.index("HMVA + Vol Target") if "HMVA + Vol Target" in labels else -1
-    # First bar: absolute Sharpe of HRP (starts from 0); rest are incremental deltas
     running  = 0.0
-    bottoms, heights, cols, hatches = [], [], [], []
+    bottoms, heights, cols = [], [], []
     for i, m in enumerate(marginal):
-        if i == 0:
-            bottoms.append(0.0)
-            heights.append(m)
-            cols.append(COLORS[0])
-            hatches.append(None)
-        elif i == vt_idx:
-            # vol-target: show absolute bar (reset running total visually)
-            # but still stacked on the HMVA bar to show the net Sharpe
-            bottoms.append(running)
-            heights.append(m)
-            cols.append(COLORS[vt_idx] if m >= 0 else "#c0392b")
-            hatches.append("//")
-        else:
-            bottoms.append(running)
-            heights.append(m)
-            cols.append("#1a7a4a" if m >= 0 else "#c0392b")
-            hatches.append(None)
+        bottoms.append(0.0 if i == 0 else running)
+        heights.append(m)
+        cols.append(COLORS[0] if i == 0 else ("#1a7a4a" if m >= 0 else "#c0392b"))
         running += m
 
     fig, ax = plt.subplots(figsize=(12, 5))
-    for i, (b, h, c, hatch) in enumerate(zip(bottoms, heights, cols, hatches)):
-        ax.bar(i, h, bottom=b, color=c, edgecolor="black", lw=0.7,
-               zorder=3, hatch=hatch)
+    for i, (b, h, c) in enumerate(zip(bottoms, heights, cols)):
+        ax.bar(i, h, bottom=b, color=c, edgecolor="black", lw=0.7, zorder=3)
     ax.axhline(0, color="black", lw=0.5)
-
-    if vt_idx > 0:
-        ax.axvline(vt_idx - 0.5, color="#555555", ls=":", lw=1.2)
 
     for i, (b, h) in enumerate(zip(bottoms, heights)):
         sign = "+" if h >= 0 else ""

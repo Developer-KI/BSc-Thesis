@@ -49,6 +49,7 @@ def load_crsp_returns(data_csv: str,
                       date_col: str = "DlyCalDt",
                       permno_col: str = "PERMNO",
                       ret_col: Optional[str] = None,
+                      impute_delist_ret: Optional[float] = None,
                       chunksize: int = 1_000_000,
                       verbose: bool = True) -> pd.DataFrame:
     """
@@ -65,6 +66,15 @@ def load_crsp_returns(data_csv: str,
               'RET' or 'DlyRet'), pass its name here and we skip the
               price-to-return calculation.  If None, we compute log
               returns from price_col.
+    impute_delist_ret : return to place on the first NaN day for stocks
+                        that exit mid-sample with a last observed return
+                        in the "normal daily" range (i.e., CRSP likely
+                        missed the actual delisting loss).  Shumway (1997)
+                        recommends -0.30.  Set to None to disable.
+                        Stocks whose last return is already < impute_delist_ret
+                        (CRSP captured a large negative event) or > +0.10
+                        (likely an M&A completion with acquisition premium)
+                        are left untouched.
     date_col, permno_col : column names.
     chunksize : rows per pandas chunk; reduce on low-RAM machines.
 
@@ -126,7 +136,61 @@ def load_crsp_returns(data_csv: str,
               f"x {returns.shape[1]} permnos  "
               f"(non-NaN density: {(~returns.isna()).mean().mean():.1%})")
 
+    if impute_delist_ret is not None:
+        returns = _impute_missing_delist_returns(
+            returns, impute_delist_ret, verbose=verbose)
+
     return returns
+
+
+def _impute_missing_delist_returns(returns: pd.DataFrame,
+                                   impute_ret: float = -0.30,
+                                   ma_threshold: float = 0.10,
+                                   verbose: bool = True) -> pd.DataFrame:
+    """
+    For each stock that exits mid-sample, check whether CRSP likely missed
+    the delisting return and impute `impute_ret` on the first dark day.
+
+    A stock is a candidate for imputation when its last non-NaN return is in
+    the "looks like a normal trading day" band:
+        impute_ret < last_ret < ma_threshold
+    Stocks outside this band are left alone:
+      - last_ret <= impute_ret : CRSP already recorded a large negative event
+      - last_ret >= ma_threshold : likely an M&A completion (acquisition premium)
+    """
+    vals = returns.values.copy()   # float64 array (T, N)
+    T, N = vals.shape
+    n_imputed = 0
+    n_already_captured = 0
+    n_ma_skip = 0
+
+    for j in range(N):
+        col = vals[:, j]
+        non_nan_idx = np.where(~np.isnan(col))[0]
+        if len(non_nan_idx) == 0 or non_nan_idx[-1] >= T - 1:
+            continue   # never traded, or traded to end of sample — nothing to do
+
+        last_i = non_nan_idx[-1]
+        last_ret = col[last_i]
+
+        if last_ret <= impute_ret:
+            n_already_captured += 1
+        elif last_ret >= ma_threshold:
+            n_ma_skip += 1
+        else:
+            # Normal daily return on last observed day — CRSP likely missed
+            # the delisting loss.  Impute on the very next row in the panel.
+            vals[last_i + 1, j] = impute_ret
+            n_imputed += 1
+
+    if verbose:
+        n_exits = n_imputed + n_already_captured + n_ma_skip
+        print(f"[crsp] delist imputation: {n_exits} mid-sample exits — "
+              f"{n_imputed} imputed at {impute_ret:.0%}, "
+              f"{n_already_captured} already have large-negative return, "
+              f"{n_ma_skip} skipped (last ret >= {ma_threshold:.0%}, likely M&A)")
+
+    return pd.DataFrame(vals, index=returns.index, columns=returns.columns)
 
 # =============================================================================
 # 1b. Market cap loader (wide)
