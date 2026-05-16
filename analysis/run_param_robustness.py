@@ -61,7 +61,7 @@ PRICE_COL  = "DlyClose"
 RET_COL    = "DlyRet"
 
 START_DATE = "1980-01-01"
-END_DATE   = "2000-01-01"
+END_DATE   = "2025-01-01"
 TOP_K      = 100
 LOOKBACK   = 504
 REBALANCE  = 21

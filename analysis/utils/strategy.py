@@ -673,62 +673,6 @@ def _vb_bisect_sharpe(node: dict, pw: float,
     }
 
 
-def _vb_bisect_twoasset(node: dict, pw: float,
-                         cov_arr: np.ndarray, mu_arr: np.ndarray,
-                         rf: float) -> Dict[int, float]:
-    """
-    Allocate weight pw between subtrees using the two-asset tangency portfolio.
-
-    Each subtree is treated as a single equal-weighted asset.  The optimal
-    split alpha (weight on the left cluster) is the closed-form tangency
-    portfolio solution that maximises the portfolio Sharpe ratio, accounting
-    for cross-cluster covariance:
-
-        V_L  = equal-weight variance of left cluster
-        V_R  = equal-weight variance of right cluster
-        C_LR = equal-weight cross-cluster covariance
-        e_L, e_R = cluster excess returns (mu - rf)
-
-        alpha = (e_L * V_R - e_R * C_LR) /
-                (e_L * V_R + e_R * V_L - (e_L + e_R) * C_LR)
-
-    alpha is clipped to [0, 1] for long-only constraints.  Falls back to
-    equal-split when the denominator is near zero or both excess returns
-    are non-positive.
-    """
-    if node is None or not node["indices"]:
-        return {}
-    idx = node["indices"]
-    if len(idx) == 1:
-        return {idx[0]: pw}
-    left, right = node.get("left"), node.get("right")
-    if left is None or right is None:
-        return {i: pw / len(idx) for i in idx}
-
-    L, R = left["indices"], right["indices"]
-    nL, nR = len(L), len(R)
-
-    sub_L = cov_arr[np.ix_(L, L)]
-    sub_R = cov_arr[np.ix_(R, R)]
-    cross  = cov_arr[np.ix_(L, R)]
-
-    v_L = float(sub_L.sum()) / (nL * nL)
-    v_R = float(sub_R.sum()) / (nR * nR)
-    c_LR = float(cross.sum()) / (nL * nR)
-
-    e_L = float(mu_arr[L].mean()) - rf
-    e_R = float(mu_arr[R].mean()) - rf
-
-    denom = e_L * v_R + e_R * v_L - (e_L + e_R) * c_LR
-    if abs(denom) < 1e-12 or (e_L <= 0 and e_R <= 0):
-        alpha = 0.5
-    else:
-        alpha = float(np.clip((e_L * v_R - e_R * c_LR) / denom, 0.0, 1.0))
-
-    return {
-        **_vb_bisect_twoasset(left,  pw * alpha,         cov_arr, mu_arr, rf),
-        **_vb_bisect_twoasset(right, pw * (1.0 - alpha), cov_arr, mu_arr, rf),
-    }
 
 
 def _vb_bisect_vol(node: dict, pw: float,
@@ -782,10 +726,9 @@ def vol_hrp_bl_weights(cov: np.ndarray,
     bf_threshold : cluster size at/below which exhaustive split search is used.
     lam_cov : blend between vol-balance and cross-cluster correlation objectives.
         1.0 (default) — pure vol-balance.  0.0 — minimise inter-cluster correlation.
-    bisect_method : "sharpe" (default) | "twoasset" | "vol"
-        "sharpe"   — proportional to each cluster's standalone Sharpe ratio.
-        "twoasset" — closed-form two-asset tangency portfolio split.
-        "vol"      — inverse cluster variance (standard HRP bisection).
+    bisect_method : "sharpe" (default) | "vol"
+        "sharpe" — proportional to each cluster's standalone Sharpe ratio.
+        "vol"    — inverse cluster variance (standard HRP bisection).
     """
     N = cov.shape[0]
     cov_pd = _ensure_pd(cov)
@@ -793,9 +736,7 @@ def vol_hrp_bl_weights(cov: np.ndarray,
     mu_arr = np.asarray(mu, dtype=float)
     tree = _build_vb_tree(cov_pd, N, bf_threshold, lam_cov=lam_cov)
 
-    if bisect_method == "twoasset":
-        w_dict = _vb_bisect_twoasset(tree, 1.0, cov_pd, mu_arr, rf)
-    elif bisect_method == "vol":
+    if bisect_method == "vol":
         w_dict = _vb_bisect_vol(tree, 1.0, cov_pd)
     else:
         w_dict = _vb_bisect_sharpe(tree, 1.0, cov_pd, mu_arr, rf)
@@ -816,7 +757,7 @@ def vol_hrp_bl_strategy(
     bisect_method: str = "sharpe",
     ewma_halflife: Optional[float] = 21,
     kf_tp: bool = True,
-    dd_thresh: float = 0.10,
+    dd_thresh: float = 1.0,
     min_lev: float = 0.40,
     dd_lookback: int = 63,
 ) -> Tuple[Callable, Callable]:
@@ -828,8 +769,12 @@ def vol_hrp_bl_strategy(
     cov_fn        : base covariance estimator, e.g. cov_sample.
     rf            : annual risk-free rate passed to vol_hrp_bl_weights.
     bf_threshold  : exhaustive-search threshold.
-    lam_cov       : vol-balance / correlation blend (see vol_hrp_bl_weights).
+    lam_cov : blend between vol-balance and cross-cluster correlation objectives.
+        1.0 (default) — pure vol-balance.  0.0 — minimise inter-cluster correlation (HRP-like).
     ewma_halflife : EWMA pseudo-returns halflife in trading days; None = uniform window.
+    bisect_method : "sharpe" (default) | "vol"
+        "sharpe" — proportional to each cluster's standalone Sharpe ratio.
+        "vol"    — inverse cluster variance (standard HRP bisection).
     kf_tp         : Kalman-filter weight smoother.
     dd_thresh     : drawdown from peak that triggers delevering (default 0.10 = 10%).
     min_lev       : minimum leverage when fully delevered (default 0.50).
@@ -1009,9 +954,7 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
     
     def vb_hrp_with(cov_fn,
                     bisect_method, lam_cov: float = 0.25,
-                    ewma_halflife: int = 21, kf_tp: bool = True,
-
-                    ):
+                    ewma_halflife: int = 21, kf_tp: bool = True,):
         return vol_hrp_bl_strategy(
             cov_fn,
             bisect_method=bisect_method, lam_cov=lam_cov,
