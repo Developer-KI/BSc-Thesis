@@ -26,7 +26,7 @@ RET_COL = "DlyRet"
 #1980 - 2002-06 min vol vb tree wins absolutely
 #2000 - 2025 max sharpe vb tree wins absolutely
 
-START_DATE = "1980-01-01"
+START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
 TOP_K = 100
 

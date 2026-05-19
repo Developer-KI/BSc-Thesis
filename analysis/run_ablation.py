@@ -50,7 +50,7 @@ DEFAULT_HISTORY = 504
 REBALANCE  = 21
 COST_BPS   = 0.0
 
-# HMVA baseline hyperparameters (match thesis defaults)
+# HMVA baseline hyperparameters
 EWMA_HL       = 21
 LAM_COV       = 0.25
 
@@ -88,6 +88,7 @@ def make_ablation_strategies() -> L.StrategyMap:
         L.cov_nonlinear_shrink,
         ewma_halflife=EWMA_HL,
         lam_cov=LAM_COV,
+        kf_tp=False
     )
     # Add KF weight smoother
     hmva_cov, hmva_alloc = L.vol_hrp_bl_strategy(
