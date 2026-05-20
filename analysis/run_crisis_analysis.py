@@ -42,7 +42,7 @@ import seaborn as sns
 
 RESULTS_DIR      = "results"
 
-STRATEGIES  = ["HMVA", "HRP-base", "HRP", "MVO-base", "MVO", "EW", "SPY-K"]
+STRATEGIES  = ["HMVA", "HRP", "MVO", "EW", "SPY-K"]
 STRAT_COLORS = {
     "HMVA":  "#1a7a4a",
     "HRP":   "#5b8dd9",
