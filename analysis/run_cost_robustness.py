@@ -1,20 +1,3 @@
-"""
-=============================================================================
-run_cost_robustness.py - CRSP point-in-time robustness sweep
-=============================================================================
-
-Sweeps the empirical experiment over a configurable grid of:
-
-    lookback    in {252, 504}                     (1 / 2 years)
-    cost_bps    in {0, 2, 5, 10}                  (transaction cost levels)
-
-Outputs in results/crsp_robustness/:
-    robustness_long.csv      one row per (cell, strategy)
-    robustness_summary.csv   aggregated across cells per strategy
-    heatmap_*.png            per-strategy Sharpe-vs-base heatmaps (lookback x cost)
-=============================================================================
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -28,7 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-import utils.strategy as L
+import utils.backtest as L
 import utils.data as C
 import utils.plotting as _plt
 

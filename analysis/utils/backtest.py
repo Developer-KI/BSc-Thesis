@@ -1,25 +1,3 @@
-"""
-=============================================================================
-hrp_lib.py - Building blocks for the HRP x Covariance Estimator experiment
-=============================================================================
-
-Contents
---------
-1.  Covariance estimators (sample, LW linear, LW non-linear, POET, POET-CV, EWMA, ADCC-GARCH)
-2.  Portfolio allocators (HRP, vol-balanced HRP+BL, equal-weight, SPYK market-cap)
-3.  Backtest engine with weight drift and proportional transaction costs
-4.  Performance metrics (return, vol, Sharpe, drawdown, Calmar, turnover, stability)
-5.  Statistical tests (DM, LW2008-style block-bootstrap Sharpe test, Holm and BH)
-6.  Factor-model simulation engine (power-law decay & factor-sparse regimes)
-7.  Plot helpers
-
-This module is import-only.  See run_main.py / run_robustness.py /
-run_simulation.py for the experiments.
-
-Author: Bachelor's thesis code, 2026.
-=============================================================================
-"""
-
 from __future__ import annotations
 
 import os
@@ -40,7 +18,6 @@ from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import squareform
 from scipy.stats import norm
 from scipy.optimize import minimize
-from sklearn.covariance import ledoit_wolf
 import nonlinshrink as nls
 
 
@@ -52,19 +29,6 @@ def cov_sample(X: np.ndarray) -> np.ndarray:
     """Plain-vanilla sample covariance Σ̂ = (T-1)^{-1} (X-μ)' (X-μ)."""
     return np.cov(X, rowvar=False)
 
-
-def cov_linear_shrink(X: np.ndarray) -> np.ndarray:
-    """
-    Ledoit-Wolf linear shrinkage covariance estimator (2004) wrapper from sklearn
-    """
-    X = np.asarray(X)
-    if X.ndim != 2:
-        raise ValueError("X must be a 2D array.")
-    # ledoit_wolf automatically centers the data
-    shrunk_cov, _ = ledoit_wolf(X, assume_centered=False)
-    return shrunk_cov
-
-
 def cov_nonlinear_shrink(X: np.ndarray) -> np.ndarray:
     """Wrapper for the nonlinshrink package"""
 
@@ -72,102 +36,6 @@ def cov_nonlinear_shrink(X: np.ndarray) -> np.ndarray:
     # 'k' is an optional parameter to specify effective degrees of freedom already subtracted
     return nls.shrink_cov(X, k=0)
 
-
-def cov_poet(X: np.ndarray,
-                K_max: int = 8,
-                C_grid: Tuple[float, ...] = (0.25, 0.5, 0.75, 1.0, 1.5, 2),
-                train_frac: float = 0.7) -> np.ndarray:
-    """
-    POET with K selected analytically (eigenvalue-ratio test) and
-    threshold constant C selected by time-series cross-validation.
-
-    The training slice [0:T1] is used to fix K via the Ahn-Horenstein
-    ratio test and to build candidate POET matrices across C_grid.  The
-    validation slice [T1:T] picks C* by minimising the out-of-sample
-    variance of the implied minimum-variance portfolio.  The final
-    estimate uses the full window with K re-derived analytically.
-    """
-    T, N = X.shape
-    T1 = int(T * train_frac)
-    X_tr, X_va = X[:T1], X[T1:]
-
-    S_tr = np.cov(X_tr, rowvar=False)
-    evals, evecs = np.linalg.eigh(S_tr)
-    evals = evals[::-1]
-    evecs = evecs[:, ::-1]
-
-    Kmax = max(1, min(K_max, N - 1))
-    ratios = evals[:Kmax] / np.maximum(evals[1:Kmax + 1], 1e-12)
-    K = int(np.argmax(ratios) + 1)
-    K = max(1, min(K, Kmax))
-
-    ones = np.ones(N)
-    best_C, best_loss = C_grid[0], np.inf
-    for C in C_grid:
-        try:
-            Sigma = _poet_from_eig(evals, evecs, S_tr, T1, K, C)
-            inv = np.linalg.inv(Sigma + 1e-8 * np.eye(N))
-            w = inv @ ones / (ones @ inv @ ones)
-            val_var = float(np.var(X_va @ w))
-            if np.isfinite(val_var) and val_var < best_loss:
-                best_loss, best_C = val_var, C
-        except Exception:
-            continue
-
-    return _cov_poet(X, K=None, K_max=K_max, threshold_C=best_C)
-
-
-def cov_ewma(returns: np.ndarray,
-             halflife: Optional[float] = None,
-             lambda_: float = 0.97,
-             shrink: Optional[str] = None) -> np.ndarray:
-    """
-    Vectorised EWMA covariance (RiskMetrics convention, zero-mean).
-
-    halflife (trading days) overrides lambda_ when supplied:
-        halflife=21  <->  lambda_ ≈ 0.967
-        halflife=11  <->  lambda_ ≈ 0.939  (close to the classic 0.94)
-
-    shrink applies a secondary shrinkage pass to the EWMA matrix:
-        None   – no shrinkage (default)
-        "lw"   – Ledoit-Wolf linear shrinkage toward scaled identity
-        "nls"  – nonlinear eigenvalue shrinkage (Ledoit-Wolf 2020)
-        "poet" – factor + adaptive soft-threshold (Fan-Liao-Mincheva 2013)
-
-    All three shrinkage modes use the pseudo-returns trick: each row is
-    scaled by sqrt(w_t * T) so that their (uncentred) sample covariance
-    equals cov_ewma exactly, letting the existing estimators operate on
-    the correct matrix without reimplementing their internals.
-    """
-    if halflife is not None:
-        if halflife <= 0:
-            raise ValueError("halflife must be positive")
-        lambda_ = 0.5 ** (1.0 / halflife)
-    if not (0 < lambda_ < 1):
-        raise ValueError("lambda_ must be in (0, 1)")
-    T, N = returns.shape
-    exponents = np.arange(T - 1, -1, -1)
-    w = (1.0 - lambda_) * np.power(lambda_, exponents)
-    w /= w.sum()
-    cov = returns.T @ (w[:, None] * returns)
-
-    if shrink is None:
-        return _ensure_pd(cov)
-
-    # pseudo[t] = sqrt(w_t * T) * r_t  =>  pseudo.T @ pseudo / T = cov_ewma
-    pseudo = np.sqrt(w * T)[:, None] * returns
-
-    if shrink == "lw":
-        _, alpha = ledoit_wolf(pseudo, assume_centered=True)
-        mu = np.trace(cov) / N
-        return _ensure_pd((1.0 - alpha) * cov + alpha * mu * np.eye(N))
-    elif shrink == "nls":
-        return _ensure_pd(nls.shrink_cov(pseudo, k=0))
-    elif shrink == "poet":
-        return cov_poet(pseudo)
-    else:
-        raise ValueError(f"unknown shrink={shrink!r}; expected None, 'lw', 'nls', or 'poet'")
-    
 def cov_ewa_nls(window: np.ndarray) -> np.ndarray:
     return cov_nonlinear_shrink(_ewma_pseudo(window, halflife=21))
     
@@ -181,66 +49,6 @@ def _ensure_pd(M: np.ndarray, jitter: float = 1e-10) -> np.ndarray:
     w, V = np.linalg.eigh(M)
     w = np.maximum(w, jitter)
     return V @ np.diag(w) @ V.T
-
-def _poet_from_eig(eigvals_desc: np.ndarray,
-                   eigvecs_desc: np.ndarray,
-                   S: np.ndarray,
-                   T: int,
-                   K: int,
-                   C: float) -> np.ndarray:
-    """Build a POET estimate from a precomputed eigendecomposition of S."""
-    N = S.shape[0]
-    U_K = eigvecs_desc[:, :K]
-    common = (U_K * eigvals_desc[:K]) @ U_K.T
-    R = S - common
-    diag_R = np.maximum(np.diag(R), 1e-12)
-    theta = np.outer(np.sqrt(diag_R), np.sqrt(diag_R))
-    tau = C * theta * np.sqrt(np.log(N) / T)
-    R_thresh = np.sign(R) * np.maximum(np.abs(R) - tau, 0.0)
-    np.fill_diagonal(R_thresh, np.diag(R))
-    return _ensure_pd(common + R_thresh)
-
-def _cov_poet(X: np.ndarray,
-             K: Optional[int] = None,
-             K_max: int = 8,
-             threshold_C: float = 0.5) -> np.ndarray:
-    """
-    POET = Principal Orthogonal complEment Thresholding (Fan-Liao-Mincheva 2013).
-
-    1. Eigendecompose S, sort eigenvalues descending.
-    2. Pick K via the eigenvalue-ratio test (Ahn-Horenstein 2013) unless given.
-    3. Common part = first K eigen-pairs.
-    4. Adaptive correlation thresholding of the residual:
-            τ_ij = C * sqrt(R_ii R_jj) * sqrt(log N / T)
-       Soft threshold off-diagonal entries; keep variances unchanged.
-    5. Project sum to nearest PD.
-    """
-    T, N = X.shape
-    S = np.cov(X, rowvar=False)
-
-    eigvals, eigvecs = np.linalg.eigh(S)
-    order = np.argsort(eigvals)[::-1]
-    eigvals = eigvals[order]
-    eigvecs = eigvecs[:, order]
-
-    if K is None:
-        Kmax = max(1, min(K_max, N - 1))
-        ratios = eigvals[:Kmax] / np.maximum(eigvals[1:Kmax + 1], 1e-12)
-        K = int(np.argmax(ratios) + 1)
-        K = max(1, min(K, Kmax))
-
-    U_K = eigvecs[:, :K]
-    Lam_K = np.diag(eigvals[:K])
-    common = U_K @ Lam_K @ U_K.T
-    R = S - common
-
-    diag_R = np.maximum(np.diag(R), 1e-12)
-    theta = np.outer(np.sqrt(diag_R), np.sqrt(diag_R))
-    tau = threshold_C * theta * np.sqrt(np.log(N) / T)
-    R_thresh = np.sign(R) * np.maximum(np.abs(R) - tau, 0.0)
-    np.fill_diagonal(R_thresh, np.diag(R))
-
-    return _ensure_pd(common + R_thresh)
 
 def _ewma_pseudo(returns: np.ndarray, halflife: float) -> np.ndarray:
     """
@@ -271,48 +79,85 @@ def _cov_to_corr(cov: np.ndarray) -> np.ndarray:
 # =============================================================================
 # Return estimation
 # =============================================================================
+
 def mu_BL_momentum(
     window: np.ndarray,
     cov: np.ndarray,
     skip_days: int = 21,
-    signal_ewma_halflife: Optional[float] = None,
 ) -> np.ndarray:
     """
     Black-Litterman type posterior expected returns
 
-    Prior:  π = w_ew
-    Views:  one absolute view per asset, Q = skip-month momentum signal
-    P = I_N (absolute views), Ω = τ · diag(Σ)  (proportional uncertainty)
+    Prior:  π = 1
+    Views:  one absolute view per asset, 
+    Q = skip-x-days momentum signal
+    P = I_N (absolute views)
+    Ω = diag(Σ)  (proportional uncertainty)
 
+    Final form:
     μ = π + Σ (Σ + diag(Σ))⁻¹ (Q - π)
 
     Falls back to π on any numerical failure
-
-    signal_ewma_halflife : if set, Q is an exponentially-weighted mean of the
-        signal window (recent returns weighted more) rather than a flat mean.
-        A halflife of 63–126 days (3–6 months) dampens stale momentum signals
-        and reduces crash exposure when long-horizon trends reverse.
-        None (default) preserves the original flat-mean behaviour.
     """
     T, N = window.shape
 
-    pi = np.ones(N) / N
+    pi_mu = np.ones(N)
 
     signal_window = window[:-skip_days] if skip_days > 0 and T > skip_days else window
-    if signal_ewma_halflife is not None:
-        T_s = signal_window.shape[0]
-        lam = 0.5 ** (1.0 / signal_ewma_halflife)
-        w_s = (1.0 - lam) * lam ** np.arange(T_s - 1, -1, -1, dtype=float)
-        w_s /= w_s.sum()
-        Q = w_s @ signal_window
-    else:
-        Q = signal_window.mean(axis=0)
+    Q = signal_window.mean(axis=0)
 
     try:
         D = np.diag(np.maximum(np.diag(cov), 1e-12))
-        return pi + cov @ np.linalg.solve(cov + D, Q - pi)
+        return pi_mu + cov @ np.linalg.solve(cov + D, Q - pi_mu)
     except np.linalg.LinAlgError:
-        return pi
+        return pi_mu
+
+# =============================================================================
+# Estimation smoother
+# =============================================================================
+  
+def _kf_smooth_weights(
+    w_new: np.ndarray,
+    w_prev: np.ndarray,
+    cov: np.ndarray,
+    mu: Optional[np.ndarray] = None,
+    mu_prev: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Kalman-filter weight smoother.
+
+    Gain K_t = Q_t / (Q_t + R_t) blends the previous weights (state) with
+    the new raw weights (observation), where:
+        R_t = spectral entropy of Sigma eigenvalues (normalised to [0,1])
+              -- high when the covariance is diffuse / estimation is noisy
+        Q_t = relative BL signal velocity ||mu_t - mu_{t-1}|| / ||mu_{t-1}||
+              -- high when the return signal has shifted sharply
+              -- defaults to 1.0 when no return signal is available
+    A large R_t (noisy estimate) or small Q_t (slow-moving signal) lowers K_t,
+    so the smoother leans on the prior weights instead of the new ones.
+    """
+    N = len(w_new)
+
+    eigvals = np.maximum(np.linalg.eigvalsh(cov), 0.0)
+    s_sum = eigvals.sum()
+    if s_sum > 1e-12:
+        p = eigvals / s_sum
+        H = -float(np.sum(p * np.log(p + 1e-12)))
+        R_t = H / np.log(max(N, 2))
+    else:
+        R_t = 1.0
+
+    if mu is not None and mu_prev is not None:
+        dmu = float(np.linalg.norm(mu - mu_prev))
+        mu_scale = float(np.linalg.norm(mu_prev)) + 1e-12
+        Q_t = dmu / mu_scale
+    else:
+        Q_t = 1.0
+
+    K_t = float(np.clip(Q_t / (Q_t + R_t + 1e-12), 0.0, 1.0))
+    w = (1.0 - K_t) * w_prev + K_t * w_new
+    s = w.sum()
+    return w / s if s > 1e-12 else np.ones(N) / N
 
 # =============================================================================
 # PORTFOLIO ALLOCATORS
@@ -349,6 +194,28 @@ def hrp_weights(cov: np.ndarray,
             w[c1] *= 1.0 - alpha
     return w
 
+def hrp_strategy(
+    cov_fn: Callable,
+    linkage_method: str = "single",
+    kf_tp: bool = True,
+) -> Tuple[Callable, Callable]:
+    """
+    Factory: (cov_fn, alloc_fn) pair for HRP with optional KF weight smoothing.
+
+    No return signal is available so Q_t defaults to 1.0 in the KF smoother;
+    smoothing is driven entirely by covariance spectral entropy (R_t).
+    """
+    prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
+
+    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
+        w = hrp_weights(cov, linkage_method=linkage_method)
+        if kf_tp and prev_w["w"] is not None:
+            w = _kf_smooth_weights(w, prev_w["w"], cov)
+        prev_w["w"] = w.copy()
+        return w
+
+    return cov_fn, _alloc_fn
+
 def min_var_weights(cov: np.ndarray) -> np.ndarray:
     """
     Long-only minimum-variance portfolio via SLSQP.
@@ -371,6 +238,30 @@ def min_var_weights(cov: np.ndarray) -> np.ndarray:
     w = np.maximum(res.x, 0.0)
     return w / w.sum() if w.sum() > 0 else x0
 
+
+
+def min_var_strategy(
+    cov_fn: Callable,
+    kf_tp: bool = True,
+) -> Tuple[Callable, Callable]:
+    """
+    Factory: (cov_fn, alloc_fn) pair for the long-only minimum-variance portfolio.
+
+        min  w'Σw   s.t.  sum(w)=1,  0 ≤ w_i ≤ 1
+
+    No return signal is available so Q_t defaults to 1.0 in the KF smoother;
+    smoothing is driven entirely by covariance spectral entropy (R_t).
+    """
+    prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
+
+    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
+        w = min_var_weights(cov)
+        if kf_tp and prev_w["w"] is not None:
+            w = _kf_smooth_weights(w, prev_w["w"], cov)
+        prev_w["w"] = w.copy()
+        return w
+
+    return cov_fn, _alloc_fn
 
 
 def max_utility_weights(cov: np.ndarray,
@@ -406,6 +297,7 @@ def max_utility_weights(cov: np.ndarray,
 def max_utility_strategy(
     cov_fn: Callable,
     gamma: float = 2.5,
+    kf_tp: bool = True,
 ) -> Tuple[Callable, Callable]:
     """
     Factory: (cov_fn, alloc_fn) pair for the long-only mean-variance utility
@@ -414,9 +306,12 @@ def max_utility_strategy(
     Parameters
     ----------
     cov_fn : base covariance estimator.
-    gamma  : risk-aversion coefficient (default 2.5).
+    gamma  : risk-aversion coefficient.
+    kf_tp  : if True, smooth weights each period with _kf_smooth_weights.
     """
     cache: Dict = {}
+    prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
+    kf_cache: Dict[str, Optional[np.ndarray]] = {"mu_prev": None}
 
     def _cov_fn(window: np.ndarray) -> np.ndarray:
         cov = cov_fn(window)
@@ -426,14 +321,23 @@ def max_utility_strategy(
     def _alloc_fn(cov: np.ndarray) -> np.ndarray:
         window = cache.get("window", np.zeros((1, cov.shape[0])))
         mu = mu_BL_momentum(window, cov)
-        return max_utility_weights(cov, mu, gamma=gamma)
+        w = max_utility_weights(cov, mu, gamma=gamma)
+
+        if kf_tp and prev_w["w"] is not None and kf_cache["mu_prev"] is not None:
+            w = _kf_smooth_weights(w, prev_w["w"], cov, mu, kf_cache["mu_prev"])
+
+        prev_w["w"] = w.copy()
+        if kf_tp:
+            kf_cache["mu_prev"] = mu.copy()
+
+        return w
 
     return _cov_fn, _alloc_fn
 
 
 
 def equal_weights(cov: np.ndarray) -> np.ndarray:
-    """1/N benchmark - DeMiguel, Garlappi & Uppal (2009)."""
+    """1/N benchmark"""
     n = cov.shape[0]
     return np.ones(n) / n
 
@@ -473,49 +377,35 @@ def make_spyk_allocator(cap_wide: pd.DataFrame) -> Callable:
 
 
 # =============================================================================
-# HMVA
+# HMVO
 # =============================================================================
 
-def _vb_merge_cost(vol_a: float, vol_b: float,
-                    sw_a: float, sw_b: float,
-                    cross: float, lam_cov: float) -> float:
+def _vb_merge_cost(cross: float, n_a: int, n_b: int,
+                   sw_a: float, sw_b: float) -> float:
     """
-    Scalar merge/split cost used by both top-down and bottom-up builders.
+    Equal-weight blend of inter-cluster covariance and correlation:
 
-    lam_cov = 1  →  pure vol-balance:  |vol(A) − vol(B)| / (vol(A) + vol(B))
-    lam_cov = 0  →  pure cross-cluster correlation:  ρ(A, B)
-    0 < lam_cov < 1  →  convex blend of both terms.
+        0.5 * Cov(EW_A, EW_B) + 0.5 * rho(EW_A, EW_B)
 
-    ρ(A, B) is the equal-weight inter-cluster correlation:
-        ρ(A, B) = cross(A→B) / sqrt(sw_A × sw_B)
-    where cross(A→B) = Σ_{i∈A, j∈B} Σ_ij  (one-way sum, by symmetry equal to
-    the other direction) and sw_S = Σ_{i,j∈S} Σ_ij = (|S| vol(S))².
-
-    This formula follows directly from
-        Cov(EW_A, EW_B)   = cross / (|A| |B|)
-        Vol(EW_A)         = sqrt(sw_A) / |A|
-        Vol(EW_B)         = sqrt(sw_B) / |B|
-    so ρ = [cross/(|A||B|)] / [sqrt(sw_A)/|A| × sqrt(sw_B)/|B|]
-         = cross / sqrt(sw_A × sw_B).
-    No matrix inversion or eigendecomposition is required.
+    where
+        Cov(EW_A, EW_B) = cross / (n_A * n_B)
+        rho(EW_A, EW_B) = cross / sqrt(sw_A * sw_B)
+        cross            = Σ_{i∈A, j∈B} Σ_ij  (one-way sum)
+        sw_S             = Σ_{i,j∈S} Σ_ij = (n_S * Vol(EW_S))²
     """
-    vol_sum  = vol_a + vol_b
-    vol_bal  = abs(vol_a - vol_b) / vol_sum if vol_sum > 1e-12 else 0.0
-    if lam_cov >= 1.0:
-        return vol_bal
+    cov_term  = cross / float(n_a * n_b) if n_a * n_b > 0 else 0.0
     denom_rho = float(np.sqrt(max(sw_a * sw_b, 0.0)))
     rho       = cross / denom_rho if denom_rho > 1e-12 else 0.0
-    return lam_cov * vol_bal + (1.0 - lam_cov) * rho
+    return 0.5 * cov_term + 0.5 * rho
 
 
 def _vb_split_bruteforce(cov_arr: np.ndarray,
-                          indices: List[int],
-                          lam_cov: float = 1.0) -> Tuple[List[int], List[int]]:
+                          indices: List[int]) -> Tuple[List[int], List[int]]:
     """
     Exhaustive best bipartition for small clusters.
 
     Enumerates all subsets of size 1..n//2 (exploiting A/B symmetry) and
-    returns the split that minimises _vb_merge_cost(lam_cov).
+    returns the split minimising _vb_merge_cost.
     Only called when len(indices) <= bf_threshold.
     """
     n = len(indices)
@@ -529,13 +419,11 @@ def _vb_split_bruteforce(cov_arr: np.ndarray,
         for A_tup in combinations(local, r):
             A_loc = list(A_tup)
             B_loc = [i for i in local if i not in set(A_tup)]
-            nA, nB = len(A_loc), len(B_loc)
-            sA    = float(M[np.ix_(A_loc, A_loc)].sum())
-            sB    = float(M[np.ix_(B_loc, B_loc)].sum())
-            cross = float(M[np.ix_(A_loc, B_loc)].sum())
-            vA    = np.sqrt(max(sA / (nA * nA), 0.0))
-            vB    = np.sqrt(max(sB / (nB * nB), 0.0))
-            score = _vb_merge_cost(vA, vB, sA, sB, cross, lam_cov)
+            nA, nB  = len(A_loc), len(B_loc)
+            sA      = float(M[np.ix_(A_loc, A_loc)].sum())
+            sB      = float(M[np.ix_(B_loc, B_loc)].sum())
+            cross   = float(M[np.ix_(A_loc, B_loc)].sum())
+            score   = _vb_merge_cost(cross, nA, nB, sA, sB)
             if score < best_score:
                 best_score = score
                 best_A, best_B = A_loc, B_loc
@@ -543,78 +431,53 @@ def _vb_split_bruteforce(cov_arr: np.ndarray,
 
 
 def _vb_split_heuristic(cov_arr: np.ndarray,
-                         indices: List[int],
-                         lam_cov: float = 1.0) -> Tuple[List[int], List[int]]:
+                         indices: List[int]) -> Tuple[List[int], List[int]]:
     """
-    O(n²) heuristic split via 2-D prefix sums.
+    O(n²) heuristic split via row-sum sort and 2-D prefix sums.
 
-    Sort order and objective both depend on lam_cov:
+    Sort by within-cluster row-sum (rowsum_i = Σ_j Σ_ij): assets with high
+    systematic within-cluster covariance are placed adjacent in the sorted
+    sequence, so any contiguous cut produces internally cohesive groups.
 
-    lam_cov = 1 (pure vol-balance):
-        Sort by individual asset vol.  Objective: |vol_L − vol_R|.
-        Contiguous cuts in vol-sorted order capture the natural clustering
-        of assets by risk level and are optimal for this criterion.
+    Objective at cut k  (all terms in O(1) from the 2-D prefix sum P):
 
-    lam_cov < 1 (correlation-aware blend):
-        Sort by within-cluster row-sum  rowsum_i = Σ_j Σ_ij  (restricted to
-        the current cluster).  This measures how much asset i co-moves with
-        the rest of the cluster — its within-cluster systematic risk.
-        Objective: lam_cov * vol_balance + (1-lam_cov) * ρ(A,B), where ρ is the
-        equal-weight inter-cluster correlation computed from the same prefix
-        sum P.  All n−1 cuts are evaluated in O(n) after the O(n²) matrix
-        extraction:
+        cross(k)   =  P[k-1, n-1] - P[k-1, k-1]        one-way inter-cluster sum
+        s_left(k)  =  P[k-1, k-1]                       within-left sum
+        s_right(k) =  total - P[n-1,k-1] - P[k-1,n-1] + P[k-1,k-1]
 
-            sum(M[:k, :k])   =  P[k-1, k-1]             ← within-left  sum
-            sum(M[k:,  k:])  =  total − P[n-1,k-1]
-                                       − P[k-1,n-1] + P[k-1,k-1]  ← within-right
-            cross(left→right)=  P[k-1, n-1] − P[k-1, k-1]        ← one-way cross
-            ρ(k)             =  cross / sqrt(s_left × s_right)
+        Cov term   =  cross / (k * (n-k))
+        rho term   =  cross / sqrt(s_left * s_right)
+        objective  =  0.5 * Cov + 0.5 * rho
 
-    Row-sum sort is also a good proxy for vol-sort (high-beta assets are
-    typically high-vol), so it performs nearly as well for the vol-balance
-    term while being strictly better for the cross-correlation term.
+    All n-1 cuts are scored in O(n) after the O(n²) matrix extraction.
     """
     n = len(indices)
     if n <= 1:
         return list(indices), []
 
-    # Extract submatrix once; derive sort key from it (no second cov lookup)
-    M_raw = cov_arr[np.ix_(indices, indices)]
-    if lam_cov >= 1.0:
-        sort_key = np.sqrt(np.maximum(np.diag(M_raw), 0.0))  # individual vol
-    else:
-        sort_key = M_raw.sum(axis=1)                          # within-cluster rowsum
-
-    order      = np.argsort(sort_key)
+    M_raw      = cov_arr[np.ix_(indices, indices)]
+    order      = np.argsort(M_raw.sum(axis=1))        # ascending within-cluster row-sum
     sorted_idx = [indices[int(i)] for i in order]
-    M          = M_raw[np.ix_(order, order)]                  # rearrange in-place
+    M          = M_raw[np.ix_(order, order)]
 
-    P     = M.cumsum(axis=0).cumsum(axis=1)
-    total = float(P[-1, -1])
-    ks    = np.arange(1, n)
+    P       = M.cumsum(axis=0).cumsum(axis=1)
+    total   = float(P[-1, -1])
+    ks      = np.arange(1, n)
     s_left  = P[ks - 1, ks - 1]
     s_right = total - P[-1, ks - 1] - P[ks - 1, -1] + s_left
-    n_l, n_r = ks.astype(float), (n - ks).astype(float)
-    v_l  = np.sqrt(np.maximum(s_left  / (n_l * n_l), 0.0))
-    v_r  = np.sqrt(np.maximum(s_right / (n_r * n_r), 0.0))
+    cross   = P[ks - 1, -1] - P[ks - 1, ks - 1]      # one-way cross sum
 
-    if lam_cov >= 1.0:
-        objective = np.abs(v_l - v_r)
-    else:
-        vol_bal   = np.abs(v_l - v_r) / np.maximum(v_l + v_r, 1e-12)
-        cross     = P[ks - 1, -1] - P[ks - 1, ks - 1]          # one-way cross sum
-        denom_rho = np.sqrt(np.maximum(s_left * s_right, 0.0))
-        rho       = np.where(denom_rho > 1e-12, cross / denom_rho, 0.0)
-        objective = lam_cov * vol_bal + (1.0 - lam_cov) * rho
+    cov_term  = cross / (ks * (n - ks))
+    denom_rho = np.sqrt(np.maximum(s_left * s_right, 0.0))
+    rho       = np.where(denom_rho > 1e-12, cross / denom_rho, 0.0)
+    objective = 0.5 * cov_term + 0.5 * rho
 
     k = int(np.argmin(objective)) + 1
     return sorted_idx[:k], sorted_idx[k:]
 
 
 def _build_vb_tree(cov_arr: np.ndarray, n: int,
-                   bf_threshold: int = 10,
-                   lam_cov: float = 1.0) -> dict:
-    """BFS top-down construction of the vol-balanced binary tree."""
+                   bf_threshold: int = 10) -> dict:
     root: dict = {"indices": list(range(n))}
     queue = [root]
     while queue:
@@ -624,9 +487,9 @@ def _build_vb_tree(cov_arr: np.ndarray, n: int,
             node["left"] = node["right"] = None
             continue
         if len(idx) <= bf_threshold:
-            left_idx, right_idx = _vb_split_bruteforce(cov_arr, idx, lam_cov=lam_cov)
+            left_idx, right_idx = _vb_split_bruteforce(cov_arr, idx)
         else:
-            left_idx, right_idx = _vb_split_heuristic(cov_arr, idx, lam_cov=lam_cov)
+            left_idx, right_idx = _vb_split_heuristic(cov_arr, idx)
         node["left"]  = {"indices": left_idx}
         node["right"] = {"indices": right_idx}
         queue.append(node["left"])
@@ -712,29 +575,26 @@ def vol_hrp_bl_weights(cov: np.ndarray,
                         mu: np.ndarray,
                         rf: float = 0.0,
                         bf_threshold: int = 10,
-                        lam_cov: float = 1.0,
                         bisect_method: str = "sharpe",
                         ) -> np.ndarray:
     """
-    Volatility-balanced HRP with return-based Sharpe bisection.
+    HRP with equal-blend inter-cluster covariance/correlation tree.
 
     Parameters
     ----------
     cov : (N, N) annualised covariance matrix.
-    mu  : (N,) expected annual returns (e.g. Black-Litterman posterior).
+    mu  : (N,) expected annual returns
     rf  : annual risk-free rate, same scale as mu.
     bf_threshold : cluster size at/below which exhaustive split search is used.
-    lam_cov : blend between vol-balance and cross-cluster correlation objectives.
-        1.0 (default) — pure vol-balance.  0.0 — minimise inter-cluster correlation.
     bisect_method : "sharpe" (default) | "vol"
         "sharpe" — proportional to each cluster's standalone Sharpe ratio.
-        "vol"    — inverse cluster variance (standard HRP bisection).
+        "vol"    — inverse cluster variance (standard HRP bisection)
     """
     N = cov.shape[0]
     cov_pd = _ensure_pd(cov)
 
     mu_arr = np.asarray(mu, dtype=float)
-    tree = _build_vb_tree(cov_pd, N, bf_threshold, lam_cov=lam_cov)
+    tree = _build_vb_tree(cov_pd, N, bf_threshold)
 
     if bisect_method == "vol":
         w_dict = _vb_bisect_vol(tree, 1.0, cov_pd)
@@ -753,34 +613,24 @@ def vol_hrp_bl_strategy(
     cov_fn: Callable,
     rf: float = 0.0,
     bf_threshold: int = 10,
-    lam_cov: float = 0.25,
     bisect_method: str = "sharpe",
-    ewma_halflife: Optional[float] = 21,
+    ewma_halflife: Optional[float] = None,
+    skip_days: Optional[int] = 21,
     kf_tp: bool = True,
-    dd_thresh: float = 1.0,
-    min_lev: float = 0.40,
-    dd_lookback: int = 63,
 ) -> Tuple[Callable, Callable]:
     """
-    Factory: (cov_fn, alloc_fn) pair for vol-balanced HRP with BL returns.
+    Factory: (cov_fn, alloc_fn) pair for HMVA with BL returns.
 
     Parameters
     ----------
     cov_fn        : base covariance estimator, e.g. cov_sample.
     rf            : annual risk-free rate passed to vol_hrp_bl_weights.
-    bf_threshold  : exhaustive-search threshold.
-    lam_cov : blend between vol-balance and cross-cluster correlation objectives.
-        1.0 (default) — pure vol-balance.  0.0 — minimise inter-cluster correlation (HRP-like).
-    ewma_halflife : EWMA pseudo-returns halflife in trading days; None = uniform window.
+    bf_threshold  : exhaustive-search threshold for the tree splitter.
     bisect_method : "sharpe" (default) | "vol"
         "sharpe" — proportional to each cluster's standalone Sharpe ratio.
         "vol"    — inverse cluster variance (standard HRP bisection).
-    kf_tp         : Kalman-filter weight smoother.
-    dd_thresh     : drawdown from peak that triggers delevering (default 0.10 = 10%).
-    min_lev       : minimum leverage when fully delevered (default 0.50).
-    dd_lookback   : trailing days used to measure the portfolio drawdown (default 63).
-        Leverage scales linearly from 1.0 at dd_thresh to min_lev at 100% drawdown.
-        The unallocated fraction (1 − lev) sits in cash earning 0%.
+    ewma_halflife : EWMA pseudo-returns halflife in trading days; None = uniform window.
+    kf_tp         : if True, smooth weights each period with _kf_smooth_weights.
     """
     cache: Dict = {}
     prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
@@ -795,58 +645,20 @@ def vol_hrp_bl_strategy(
     def _alloc_fn(cov: np.ndarray) -> np.ndarray:
         N = cov.shape[0]
         window = cache.get("window", np.zeros((1, N)))
-        mu = mu_BL_momentum(window, cov)
+        mu = mu_BL_momentum(window, cov, skip_days=skip_days)
 
         w = vol_hrp_bl_weights(
             cov, mu, rf=rf, bf_threshold=bf_threshold,
-            lam_cov=lam_cov, bisect_method=bisect_method,
+            bisect_method=bisect_method,
         )
 
-        if kf_tp and prev_w["w"] is not None:
-            # R_t: spectral entropy of Σ eigenvalues, normalised to [0, 1]
-            eigvals = np.linalg.eigvalsh(cov)
-            eigvals = np.maximum(eigvals, 0.0)
-            s_sum = eigvals.sum()
-            if s_sum > 1e-12:
-                p = eigvals / s_sum
-                H = -float(np.sum(p * np.log(p + 1e-12)))
-                R_t = H / np.log(max(N, 2))
-            else:
-                R_t = 1.0
+        if kf_tp and prev_w["w"] is not None and kf_cache["mu_prev"] is not None:
+            w = _kf_smooth_weights(w, prev_w["w"], cov, mu, kf_cache["mu_prev"])
 
-            # Q_t: BL signal velocity normalised by previous signal magnitude
-            if kf_cache["mu_prev"] is not None:
-                dmu = float(np.linalg.norm(mu - kf_cache["mu_prev"]))
-                mu_scale = float(np.linalg.norm(kf_cache["mu_prev"])) + 1e-12
-                Q_t = dmu / mu_scale
-            else:
-                Q_t = 1.0
-
-            K_t = float(np.clip(Q_t / (Q_t + R_t + 1e-12), 0.0, 1.0))
-            w = (1.0 - K_t) * prev_w["w"] + K_t * w
-            s = w.sum()
-            w = w / s if s > 1e-12 else np.ones(N) / N
-
+        prev_w["w"] = w.copy()
         if kf_tp:
             kf_cache["mu_prev"] = mu.copy()
 
-        # Drawdown-triggered delevering: scale weights down when recent portfolio
-        # drawdown from peak exceeds dd_thresh; remainder sits in cash at 0%.
-        if dd_thresh < 1.0 and prev_w["w"] is not None:
-            proxy_w = prev_w["w"]
-            n_look = min(dd_lookback, len(window))
-            port_r = window[-n_look:] @ proxy_w
-            cum = np.cumprod(1.0 + port_r)
-            roll_peak = np.maximum.accumulate(cum)
-            current_dd = float((roll_peak[-1] - cum[-1]) / (roll_peak[-1] + 1e-12))
-            if current_dd > dd_thresh:
-                lev = float(np.clip(
-                    1.0 - (current_dd - dd_thresh) / (1.0 - dd_thresh + 1e-12) * (1.0 - min_lev),
-                    min_lev, 1.0,
-                ))
-                w = w * lev
-
-        prev_w["w"] = w
         return w
 
     return _cov_fn, _alloc_fn
@@ -943,30 +755,30 @@ def backtest(returns: pd.DataFrame,
 
 def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
                          ) -> StrategyMap:
-    """
-    Strategy set for the high-dimensional CRSP runs
-    """
     def hrp_with(cov_fn, linkage_method="single"):
-        return cov_fn, lambda c: hrp_weights(c, linkage_method=linkage_method)
+        return hrp_strategy(cov_fn, linkage_method=linkage_method, kf_tp=False)
     
     def mvo_with(cov_fn, risk_aversion=2.5):
-        return max_utility_strategy(cov_fn, gamma=risk_aversion)
+        return max_utility_strategy(cov_fn, gamma=risk_aversion, kf_tp=True)
     
     def vb_hrp_with(cov_fn,
-                    bisect_method, lam_cov: float = 0.25,
-                    ewma_halflife: int = 21, kf_tp: bool = True,):
+                    bisect_method,
+                    # For portfolio construction always 1 month even for longer rebalances, due to the nature of tree allocations
+                    ewma_halflife: float = 21, skip_days: int = 21,
+                    kf_tp: bool = True):
         return vol_hrp_bl_strategy(
             cov_fn,
-            bisect_method=bisect_method, lam_cov=lam_cov,
-            ewma_halflife=ewma_halflife, kf_tp=kf_tp,
+            bisect_method=bisect_method,
+            ewma_halflife=ewma_halflife, skip_days=skip_days,
+            kf_tp=kf_tp,
         )
 
     strategies: StrategyMap = {
-        "HMVA":   vb_hrp_with(cov_nonlinear_shrink, bisect_method="sharpe"),
-        "HMVA-mv":vb_hrp_with(cov_nonlinear_shrink, bisect_method="vol"),
-        "HRP":    hrp_with(cov_ewa_nls),
-        "MVO":    mvo_with(cov_ewa_nls),
-        "EW":     (cov_sample, equal_weights),
+        "HMVA":     vb_hrp_with(cov_nonlinear_shrink, bisect_method="sharpe"),
+        "HMVA-mv":  vb_hrp_with(cov_nonlinear_shrink, bisect_method="vol"),
+        "HRP":      hrp_with(cov_ewa_nls),
+        "MVO":      mvo_with(cov_ewa_nls),
+        "EW":       (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
         strategies["SPY-K"] = (cov_sample, make_spyk_allocator(market_cap_wide))
@@ -1141,7 +953,7 @@ def backtest_pit(returns_wide: pd.DataFrame,
 
 
 # =============================================================================
-# 5. PERFORMANCE METRICS
+# PERFORMANCE METRICS
 # =============================================================================
 
 def _extra_metrics(r: pd.Series) -> Dict[str, float]:
@@ -1234,7 +1046,7 @@ def compute_metrics_pit(daily_returns: pd.DataFrame,
 
 
 # =============================================================================
-# 6. STATISTICAL TESTS
+# STATISTICAL TESTS
 # =============================================================================
 
 def diebold_mariano(d1: pd.Series, d2: pd.Series,
@@ -1321,157 +1133,7 @@ def adjust_pvalues(pvals: np.ndarray, method: str = "holm") -> np.ndarray:
 
 
 # =============================================================================
-# 7. SIMULATION
-# =============================================================================
-
-def _banded_cov(N: int, diag_var: float, bandwidth: int = 2,
-                decay: float = 0.4) -> np.ndarray:
-    """
-    Banded covariance: nonzero entries only within `bandwidth` of the diagonal.
-    Used as a *truly sparse* idiosyncratic residual to give POET something to
-    actually threshold (a strict-diagonal residual is uninteresting because
-    NLS handles it equally well).
-    """
-    Sigma = np.zeros((N, N))
-    for k in range(-bandwidth, bandwidth + 1):
-        v = diag_var * decay ** abs(k)
-        np.fill_diagonal(Sigma[max(0, k):, max(0, -k):], v)
-    return Sigma
-
-
-def _dispersed_eig_cov(N: int, alpha: float = 0.7, seed: int = 0) -> np.ndarray:
-    """
-    Dense covariance with a power-law eigenvalue spectrum.
-
-    Σ = U diag(λ) U' with λ_k = k^{-α} (then rescaled so trace = N).
-    Eigenvectors U are a uniformly random orthogonal matrix.
-
-    The point: eigenvalues are smoothly dispersed across several orders of
-    magnitude with NO gap and NO sparsity.  Linear shrinkage (one constant
-    proportion applied to every eigenvalue) is wasteful here -- the small
-    eigenvalues need much more shrinkage than the large ones.  NLS handles
-    each eigenvalue individually and should dominate LW.  POET has no
-    factors to extract and no sparse residual to threshold.
-    """
-    rng = np.random.default_rng(seed)
-    lam = (np.arange(1, N + 1)) ** (-alpha)
-    lam = lam * (N / lam.sum())                # rescale so tr(Σ)=N
-    A = rng.standard_normal((N, N))
-    Q, _ = np.linalg.qr(A)                     # uniform random orthogonal
-    return (Q * lam) @ Q.T
-
-
-
-def simulate_returns(T: int, N: int,
-                     regime: str = "factor_sparse",
-                     seed: int = 0
-                     ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Generate synthetic returns from one of several theoretically distinct regimes.
-
-    Regimes
-    -------
-    'factor_sparse'   : low-rank common + banded sparse residual.
-                        POET expected to dominate, NLS competitive, LW worst.
-    'dispersed_eigs'  : dense covariance with power-law eigenvalue spectrum.
-                        NLS dominates LW; POET no advantage.
-    'clustered_eigs'  : two eigenvalue clusters (few large, many small).
-                        NLS should dominate LW; clean, stable DGP.
-    'weak_factor'     : weak factors + sparse residual.  Robustness check.
-
-    Returns
-    -------
-    X : (T, N) simulated returns from N(0, Σ_true)
-    Sigma_true : the true covariance
-    """
-    rng = np.random.default_rng(seed)
-
-    if regime == "factor_sparse":
-        K = 3
-        factor_var = np.array([5.0, 3.0, 1.5])
-        B = rng.standard_normal((N, K))
-        common = (B * factor_var) @ B.T
-        Sigma_idio = _banded_cov(N, diag_var=0.4, bandwidth=2, decay=0.4)
-        Sigma_true = common + Sigma_idio
-    elif regime == "dispersed_eigs":
-        Sigma_true = _dispersed_eig_cov(N, alpha=0.7, seed=seed+1)
-    else:
-        raise ValueError(f"unknown regime {regime!r}; "
-                         f"expected one of factor_sparse, dispersed_eigs")
-
-    Sigma_true = _ensure_pd(Sigma_true)
-    L_chol = np.linalg.cholesky(Sigma_true)
-    Z = rng.standard_normal((T, N))
-    X = Z @ L_chol.T
-    return X, Sigma_true
-
-
-def evaluate_sigma(Sigma_hat: np.ndarray,
-                   Sigma_true: np.ndarray) -> Dict[str, float]:
-    """Frobenius loss + minimum-variance portfolio variance under true Σ."""
-    frob = float(np.linalg.norm(Sigma_hat - Sigma_true, ord="fro"))
-    N = Sigma_hat.shape[0]
-    try:
-        inv = np.linalg.inv(Sigma_hat + 1e-10 * np.eye(N))
-        ones = np.ones(N)
-        w = inv @ ones / (ones @ inv @ ones)
-        mv = float(w @ Sigma_true @ w)
-    except Exception:
-        mv = np.nan
-    return {"frobenius": frob, "minvar_true_var": mv}
-
-
-def run_simulation_study(T: int = 300, N: int = 200,
-                         regimes: Tuple[str, ...] = ("factor_sparse", "dispersed_eigs"),
-                         n_reps: int = 50,
-                         seed0: int = 0,
-                         **kwargs) -> pd.DataFrame:
-    """
-    Sweep cov estimators over multiple theoretical regimes.
-
-    Defaults: T=300, N=200 -> N/T ≈ 0.67, the moderate high-dim regime
-    where NLS / POET advantages over LW are visible.
-
-    Two relative-improvement columns are computed for downstream tests:
-        mv_relative_to_sample : (loss_X - loss_Sample) / loss_Sample
-        mv_relative_to_lw     : (loss_X - loss_LW)     / loss_LW
-    Negative means improvement over the relevant baseline.
-    """
-    estimators = {
-        "Sample": cov_sample,
-        "LW":     cov_linear_shrink,
-        "NLS":    cov_nonlinear_shrink,
-        "POET":   cov_poet,
-    }
-    rows: List[Dict] = []
-    for s in regimes:
-        for r in range(n_reps):
-            X, Sigma_true = simulate_returns(
-                T, N, regime=s, seed=seed0 + r * 17 + abs(hash(s)) % 1000)
-            base_sample = evaluate_sigma(estimators["Sample"](X), Sigma_true)
-            base_lw = evaluate_sigma(estimators["LW"](X), Sigma_true)
-            for name, fn in estimators.items():
-                try:
-                    Sigma_hat = fn(X)
-                    ev = evaluate_sigma(Sigma_hat, Sigma_true)
-                    rel_sample = ((ev["minvar_true_var"]
-                                   - base_sample["minvar_true_var"])
-                                  / base_sample["minvar_true_var"])
-                    rel_lw = ((ev["minvar_true_var"]
-                               - base_lw["minvar_true_var"])
-                              / base_lw["minvar_true_var"])
-                    rows.append(dict(regime=s, rep=r, estimator=name,
-                                     **ev,
-                                     mv_relative_to_sample=rel_sample,
-                                     mv_relative_to_lw=rel_lw))
-                except Exception as e:
-                    print(f"[sim] {s}/{r}/{name} failed: {e}")
-        print(f"[sim] regime={s} done ({n_reps} reps)")
-    return pd.DataFrame(rows)
-
-
-# =============================================================================
-# 8. PLOTTING
+# PLOTTING
 # =============================================================================
 
 def _ensure_dir(path: str) -> str:
@@ -1551,8 +1213,6 @@ def plot_backtest_results(daily: pd.DataFrame,
     Outputs (PNG, 150 dpi):
         equity_curves.png    cumulative wealth index
         drawdowns.png        underwater curve with fill
-        rolling_sharpe.png   63-day rolling annualised Sharpe
-        rolling_vol.png      63-day rolling annualised volatility
         annual_returns.png   grouped calendar-year bar chart
         risk_return.png      risk-return scatter with iso-Sharpe lines
         return_dist.png      histogram + KDE per strategy (monthly)
@@ -1562,8 +1222,6 @@ def plot_backtest_results(daily: pd.DataFrame,
         maxdd_bars.png       Max-drawdown bar chart
         turnover_bars.png    Turnover bar chart
         metrics_table.png    colour-coded full metrics table
-
-    Falls back to the legacy hrp_lib plots when plotting.py is unavailable.
     """
     _ensure_dir(outdir)
     suf = f" {title_suffix}".rstrip() if title_suffix else ""
@@ -1585,16 +1243,6 @@ def plot_backtest_results(daily: pd.DataFrame,
     _plt.plot_drawdown(
         daily, title=f"Drawdowns{suf}",
         save_path=f"{outdir}/drawdowns.png")
-    plt.close("all")
-
-    _plt.plot_rolling_sharpe(
-        daily, window=63, title=f"Rolling Sharpe (63-day){suf}",
-        save_path=f"{outdir}/rolling_sharpe.png")
-    plt.close("all")
-
-    _plt.plot_rolling_volatility(
-        daily, window=63, title=f"Rolling Volatility (63-day){suf}",
-        save_path=f"{outdir}/rolling_vol.png")
     plt.close("all")
 
     _plt.plot_annual_returns(
@@ -1686,11 +1334,6 @@ def plot_holdings_concentration(
     holdings_topk_<name>.png
         Cumulative weight of the top-k assets at each rebalance for a single
         strategy, one line per k value in `top_ks`.
-
-    holdings_area_<name>.png
-        Stacked area chart where assets are sorted by descending weight at each
-        rebalance so the tallest band is always the largest holding.  The y-axis
-        represents cumulative portfolio weight (0→1).
     """
     _ensure_dir(outdir)
     suf = f" {title_suffix}".rstrip() if title_suffix else ""
@@ -1737,145 +1380,3 @@ def plot_holdings_concentration(
         plt.savefig(f"{outdir}/holdings_topk_{safe}.png", dpi=150)
         plt.close()
 
-        # ── 3. Stacked area (assets ranked by weight each period) ────────────
-        sorted_w = pd.DataFrame(
-            [np.sort(row)[::-1] for row in W.values],
-            index=W.index,
-            columns=[f"Rank {i + 1}" for i in range(n_assets)],
-        )
-        # Keep only top-20 ranks to avoid visual clutter
-        top_cols = sorted_w.columns[:20]
-        display = sorted_w[top_cols]
-
-        cmap = plt.cm.get_cmap("tab20", len(top_cols))
-        colors = [cmap(i) for i in range(len(top_cols))]
-
-        fig, ax = plt.subplots(figsize=(11, 5))
-        ax.stackplot(
-            display.index,
-            [display[c].values for c in top_cols],
-            labels=list(top_cols),
-            colors=colors,
-            alpha=0.85,
-        )
-        ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1.0))
-        ax.set_title(f"Weight Concentration by Rank — {name}{suf}")
-        ax.set_ylabel("Cumulative weight")
-        handles, labels = ax.get_legend_handles_labels()
-        ax.legend(handles[:10], labels[:10], loc="upper right",
-                  fontsize=7, ncol=2, title="Rank")
-        plt.tight_layout()
-        plt.savefig(f"{outdir}/holdings_area_{safe}.png", dpi=150)
-        plt.close()
-
-
-def plot_simulation_results(sim_df: pd.DataFrame, outdir: str) -> None:
-    """
-    Four figures:
-
-      1. sim_minvar_relative_to_sample.png : bar chart of mean
-            (loss_X − loss_Sample) / loss_Sample with 95% bootstrap CI.
-            Sample is the universal baseline; this answers "do the
-            advanced estimators all beat the trivial naive estimator?"
-      2. sim_minvar_relative_to_lw.png : bar chart of mean
-            (loss_X − loss_LW) / loss_LW with 95% bootstrap CI.
-            LW is the relevant baseline once the universal Sample-vs-
-            advanced gap is established; this answers "does going beyond
-            linear shrinkage actually help?"
-      3. sim_minvar_true_var.png : raw boxplots of the underlying loss
-            (kept for completeness / appendix).
-      4. sim_frobenius.png : Frobenius boxplots, with explicit caveat
-            that within-rep variance dominates here.
-    """
-    _ensure_dir(outdir)
-    sns.set_style("whitegrid")
-
-    rng = np.random.default_rng(0)
-
-    def boot_mean_ci(x: np.ndarray, n_boot: int = 2000
-                     ) -> Tuple[float, float, float]:
-        x = np.asarray(x, dtype=float)
-        x = x[np.isfinite(x)]
-        if x.size < 2:
-            return float("nan"), float("nan"), float("nan")
-        idx = rng.integers(0, x.size, (n_boot, x.size))
-        means = x[idx].mean(axis=1)
-        return (float(x.mean()),
-                float(np.quantile(means, 0.025)),
-                float(np.quantile(means, 0.975)))
-
-    regimes = [r for r in sim_df["regime"].unique()]
-    palette = {"Sample": "#7f7f7f", "LW": "#1f77b4",
-               "NLS": "#2ca02c",   "POET": "#d62728"}
-
-    def _bar_plot(rel_col: str, baseline_name: str,
-                  excluded_estimators: Tuple[str, ...],
-                  filename: str) -> None:
-        rows = []
-        for (regime, estimator), grp in sim_df.groupby(["regime", "estimator"]):
-            if estimator in excluded_estimators:
-                continue
-            m, lo, hi = boot_mean_ci(grp[rel_col].values)
-            rows.append({"regime": regime, "estimator": estimator,
-                         "mean": m, "ci_lo": lo, "ci_hi": hi})
-        summary = pd.DataFrame(rows)
-        estimators = [e for e in ["Sample", "LW", "NLS", "POET"]
-                      if e not in excluded_estimators]
-
-        fig, ax = plt.subplots(figsize=(8, 4.5))
-        x_idx = np.arange(len(regimes))
-        width = 0.8 / max(len(estimators), 1)
-        for i, est in enumerate(estimators):
-            sub = summary[summary["estimator"] == est].set_index("regime")
-            means = [sub.loc[r, "mean"] if r in sub.index else np.nan for r in regimes]
-            los   = [sub.loc[r, "ci_lo"] if r in sub.index else np.nan for r in regimes]
-            his   = [sub.loc[r, "ci_hi"] if r in sub.index else np.nan for r in regimes]
-            err_lo = [m - lo for m, lo in zip(means, los)]
-            err_hi = [hi - m for m, hi in zip(means, his)]
-            ax.bar(x_idx + (i - (len(estimators) - 1) / 2) * width, means,
-                   width=width, yerr=[err_lo, err_hi],
-                   capsize=3, color=palette.get(est, "C0"),
-                   edgecolor="black", linewidth=0.5, label=est)
-        ax.axhline(0, color="black", lw=0.8)
-        ax.set_xticks(x_idx)
-        ax.set_xticklabels(regimes)
-        ax.set_ylabel(f"Min-Var portfolio variance: (X − {baseline_name}) / {baseline_name}")
-        ax.set_title(f"Relative improvement over {baseline_name} baseline\n"
-                     f"(negative = better; bars = 95% bootstrap CI)")
-        ax.legend(title="Estimator", loc="best", fontsize=9)
-        plt.tight_layout()
-        plt.savefig(f"{outdir}/{filename}", dpi=120)
-        plt.close()
-
-    # 1. relative to Sample (excludes Sample itself, which is trivially zero)
-    _bar_plot("mv_relative_to_sample", "Sample",
-              excluded_estimators=("Sample",),
-              filename="sim_minvar_relative_to_sample.png")
-
-    # 2. relative to LW (excludes Sample as not interesting and LW as trivial zero)
-    _bar_plot("mv_relative_to_lw", "LW",
-              excluded_estimators=("Sample", "LW"),
-              filename="sim_minvar_relative_to_lw.png")
-
-    # 3. raw MV boxplots (appendix) -----------------------------------
-    fig, ax = plt.subplots(figsize=(9, 4))
-    sns.boxplot(data=sim_df, x="regime", y="minvar_true_var",
-                hue="estimator", ax=ax, order=regimes, palette=palette)
-    ax.set_title("Min-Var portfolio variance under true Σ (raw values)")
-    ax.set_xlabel("Regime")
-    ax.set_ylabel("Min-Var portfolio variance")
-    plt.tight_layout()
-    plt.savefig(f"{outdir}/sim_minvar_true_var.png", dpi=120)
-    plt.close()
-
-    # 4. Frobenius (with caveat in title) -----------------------------
-    fig, ax = plt.subplots(figsize=(9, 4))
-    sns.boxplot(data=sim_df, x="regime", y="frobenius",
-                hue="estimator", ax=ax, order=regimes, palette=palette)
-    ax.set_title("Frobenius loss (NB: within-rep variance often dominates;\n"
-                 "see relative-improvement figures for the portfolio-relevant view)")
-    ax.set_xlabel("Regime")
-    ax.set_ylabel("‖Σ̂ − Σ_true‖_F")
-    plt.tight_layout()
-    plt.savefig(f"{outdir}/sim_frobenius.png", dpi=120)
-    plt.close()

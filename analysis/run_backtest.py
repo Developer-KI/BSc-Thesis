@@ -6,7 +6,7 @@ from typing import List
 import numpy as np
 import pandas as pd
 
-import utils.strategy as L
+import utils.backtest as L
 import utils.data as C
 
 
@@ -21,10 +21,6 @@ PERMNO_COL = "PERMNO"
 DATE_COL = "DlyCalDt"
 PRICE_COL = "DlyClose"
 RET_COL = "DlyRet"
-
-# How to switch between them and why do they perform differently. Whats the root cause?
-#1980 - 2002-06 min vol vb tree wins absolutely
-#2000 - 2025 max sharpe vb tree wins absolutely
 
 START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
@@ -117,10 +113,19 @@ def main(argv: List[str] = None) -> None:
         if s == "HMVA":
             continue
         lw_diff, lw_p = L.lw_sharpe_test(base, daily[s], n_boot=2000, block=21)
-        rows.append({"Strategy": s, "Sharpe_diff": lw_diff, "LW_p": lw_p})
+        dm_stat, dm_p  = L.diebold_mariano(base, daily[s], h=21)
+        rows.append({
+            "Strategy":   s,
+            "Sharpe_diff": lw_diff,
+            "LW_p":        lw_p,
+            "DM_stat":     dm_stat,
+            "DM_p":        dm_p,
+        })
     test_df = pd.DataFrame(rows)
     test_df["LW_p_holm"] = L.adjust_pvalues(test_df["LW_p"].values, "holm")
-    test_df["LW_p_bh"] = L.adjust_pvalues(test_df["LW_p"].values, "bh")
+    test_df["LW_p_bh"]   = L.adjust_pvalues(test_df["LW_p"].values, "bh")
+    test_df["DM_p_holm"] = L.adjust_pvalues(test_df["DM_p"].values, "holm")
+    test_df["DM_p_bh"]   = L.adjust_pvalues(test_df["DM_p"].values, "bh")
     print(test_df.round(4).to_string(index=False))
     test_df.to_csv(f"{outdir}/statistical_tests.csv", index=False)
 
