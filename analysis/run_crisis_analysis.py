@@ -1,7 +1,7 @@
 """
 run_crisis.py  –  Crisis-period analysis of HMVA backtest results.
 
-Loads daily portfolio returns from results/crsp_lb{LOOKBACK}/daily_excess_returns.csv
+Loads daily portfolio returns from results/backtest/daily_excess_returns.csv
 and analyses risk-adjusted performance across defined market regimes.
 
 Crisis periods analysed:
@@ -34,22 +34,18 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import seaborn as sns
+import matplotlib.ticker as mtick
+from matplotlib.colors import TwoSlopeNorm
+import utils.plotting as _plt
+
+_PALETTE = _plt._PALETTE
 
 
 # ── configuration ─────────────────────────────────────────────────────────────
 
-RESULTS_DIR      = "results"
+RESULTS_DIR = "results"
 
-STRATEGIES  = ["HMVA", "HRP", "MVO", "EW", "SPY-K"]
-STRAT_COLORS = {
-    "HMVA":  "#1a7a4a",
-    "HRP":   "#5b8dd9",
-    "GMV":   "#f0a500",
-    "EW":    "#6c757d",
-    "SPY-K": "#e05c2a",
-}
+STRATEGIES = ["HMVA", "HMVA-mv", "HRP", "MVO", "EW", "SPY-K"]
 
 CRISIS_PERIODS: Dict[str, Tuple[str, str]] = {
     "Dot-com trough\n(2002)":       ("2002-01-01", "2002-10-31"),
@@ -59,13 +55,27 @@ CRISIS_PERIODS: Dict[str, Tuple[str, str]] = {
 }
 
 CALM_PERIODS: Dict[str, Tuple[str, str]] = {
-    "Pre-GFC bull\n(2003–2007)":    ("2003-01-01", "2007-09-30"),
-    "Post-GFC bull\n(2009–2020)":   ("2009-04-01", "2020-01-14"),
+    "Pre-GFC bull\n(2003–2007)":     ("2003-01-01", "2007-09-30"),
+    "Post-GFC bull\n(2009–2020)":    ("2009-04-01", "2020-01-14"),
     "Post-COVID rebound\n(2020–21)": ("2020-05-01", "2021-12-31"),
 }
 
+_CRISIS_SHADE = "#fce4e4"
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def _col_color(col: str, columns) -> str:
+    idx = list(columns).index(col) if col in columns else 0
+    return _PALETTE[idx % len(_PALETTE)]
+
+
+def _shade_crises(ax) -> None:
+    for label, (s, e) in CRISIS_PERIODS.items():
+        ax.axvspan(pd.Timestamp(s), pd.Timestamp(e),
+                   color=_CRISIS_SHADE, alpha=0.65, zorder=0,
+                   label=f"Crisis: {label.splitlines()[0]}")
+
 
 def _compute_period_metrics(daily: pd.DataFrame,
                              start: str,
@@ -113,22 +123,19 @@ def plot_rolling_sharpe(daily: pd.DataFrame, outdir: str) -> None:
         raw=True,
     )
     fig, ax = plt.subplots(figsize=(14, 5))
-    for label, (s, e) in CRISIS_PERIODS.items():
-        ax.axvspan(pd.Timestamp(s), pd.Timestamp(e),
-                   color="#fce4e4", alpha=0.7, zorder=0,
-                   label=f"Crisis: {label.splitlines()[0]}")
-    ax.axhline(0, color="black", lw=0.5)
+    _shade_crises(ax)
+    ax.axhline(0, color="black", lw=0.6, ls="--")
     for col in daily.columns:
-        c   = STRAT_COLORS.get(col, "gray")
-        lw  = 2.2 if col == "HMVA" else 1.0
-        ax.plot(roll.index, roll[col], color=c, lw=lw, label=col)
+        lw = 2.2 if col == "HMVA" else 1.2
+        ax.plot(roll.index, roll[col],
+                color=_col_color(col, daily.columns), lw=lw, label=col)
     ax.set_title(f"{window}-day rolling Sharpe ratio by strategy  (CRSP 2002–2024)")
     ax.set_ylabel("Rolling Sharpe (annualised)")
-    ax.legend(ncol=3, fontsize=8, loc="upper left")
     ax.set_ylim(-4, 5)
-    plt.tight_layout()
-    plt.savefig(f"{outdir}/rolling_sharpe.png", dpi=150)
-    plt.close()
+    ax.legend(ncol=3, fontsize=8, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/rolling_sharpe.png", bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_crisis_equity(daily: pd.DataFrame, outdir: str) -> None:
@@ -142,33 +149,31 @@ def plot_crisis_equity(daily: pd.DataFrame, outdir: str) -> None:
             continue
         for col in sub.columns:
             cum = (1 + sub[col]).cumprod()
-            c   = STRAT_COLORS.get(col, "gray")
-            lw  = 2.2 if col == "HMVA" else 1.0
-            ax.plot(cum.index, cum.values, color=c, lw=lw, label=col)
+            lw  = 2.2 if col == "HMVA" else 1.2
+            ax.plot(cum.index, cum.values,
+                    color=_col_color(col, daily.columns), lw=lw, label=col)
         ax.axhline(1, color="black", lw=0.5, ls="--")
         ax.set_title(label.replace("\n", "  "), fontsize=10)
         ax.set_ylabel("Growth of $1")
+        ax.yaxis.set_major_formatter(mtick.FormatStrFormatter("%.2f"))
         ax.legend(fontsize=7)
-    plt.tight_layout()
-    plt.savefig(f"{outdir}/crisis_equity.png", dpi=150)
-    plt.close()
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/crisis_equity.png", bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_period_sharpe_heatmap(all_metrics: pd.DataFrame, outdir: str) -> None:
-    """Heatmap: rows = periods, columns = strategies, values = Sharpe ratio."""
     pivot = all_metrics.pivot(index="period", columns="strategy", values="Sharpe")
-    # order rows: crises then calm
     crisis_names = [k.replace("\n", " ") for k in CRISIS_PERIODS]
     calm_names   = [k.replace("\n", " ") for k in CALM_PERIODS]
     row_order    = crisis_names + calm_names
     pivot = pivot.reindex([r for r in row_order if r in pivot.index])
-    # keep only recognised strategies in column order
     col_order = [c for c in STRATEGIES if c in pivot.columns]
     pivot = pivot[col_order]
 
-    # diverging colormap centred at 0
-    vmax = max(abs(pivot.values[~np.isnan(pivot.values)].max()), 0.1)
-    norm = mcolors.TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+    vals = pivot.values[~np.isnan(pivot.values)]
+    vmax = max(abs(vals).max(), 0.1) if len(vals) else 1.0
+    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
 
     fig, ax = plt.subplots(figsize=(10, len(pivot) * 0.7 + 1.5))
     im = ax.imshow(pivot.values.astype(float), aspect="auto",
@@ -183,76 +188,56 @@ def plot_period_sharpe_heatmap(all_metrics: pd.DataFrame, outdir: str) -> None:
             if not np.isnan(v):
                 ax.text(j, i, f"{v:.2f}", ha="center", va="center",
                         fontsize=9, color="black")
-    # grey separator line between crises and calm periods
     n_crisis = sum(1 for k in crisis_names if k in pivot.index.tolist())
     ax.axhline(n_crisis - 0.5, color="white", lw=2)
-    plt.colorbar(im, ax=ax, label="Annualised Sharpe ratio")
+    fig.colorbar(im, ax=ax, label="Annualised Sharpe ratio")
     ax.set_title("Sharpe ratio by market regime and strategy", fontsize=12)
-    plt.tight_layout()
-    plt.savefig(f"{outdir}/period_sharpe_heatmap.png", dpi=150)
-    plt.close()
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/period_sharpe_heatmap.png", bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_monthly_heatmap(daily: pd.DataFrame, strategy: str, outdir: str) -> None:
-    """Calendar heatmap of monthly returns (year × month)."""
     if strategy not in daily.columns:
         return
-    r = daily[strategy].dropna()
-    monthly = (1 + r).resample("ME").prod() - 1
-    monthly.index = monthly.index.to_period("M")
-    df = monthly.rename("ret").reset_index()
-    period_col = df.columns[0]
-    df["year"]  = df[period_col].dt.year
-    df["month"] = df[period_col].dt.month
-    pivot = df.pivot(index="year", columns="month", values="ret") * 100
-    pivot.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-    vabs = min(max(abs(pivot.values[~np.isnan(pivot.values)]).max(), 1.0), 10.0)
-    fig, ax = plt.subplots(figsize=(14, max(4, len(pivot) * 0.45 + 1.5)))
-    sns_ax = sns.heatmap(
-        pivot, ax=ax, cmap="RdYlGn", center=0,
-        vmin=-vabs, vmax=vabs,
-        annot=True, fmt=".1f", annot_kws={"size": 7.5},
-        linewidths=0.5, linecolor="white",
-        cbar_kws={"label": "Monthly return (%)"},
+    monthly = (1 + daily[strategy].dropna()).resample("ME").prod() - 1
+    _plt.plot_monthly_returns_heatmap(
+        monthly,
+        title=f"Monthly returns: {strategy}  (CRSP 2002–2024)",
+        save_path=f"{outdir}/monthly_heatmap_{strategy.replace('-', '_')}.png",
     )
-    ax.set_title(f"Monthly returns: {strategy}  (CRSP 2002–2024)", fontsize=12)
-    ax.set_xlabel("")
-    ax.set_ylabel("Year")
-    plt.tight_layout()
-    plt.savefig(f"{outdir}/monthly_heatmap_{strategy.replace('-','_')}.png", dpi=150)
-    plt.close()
+    plt.close("all")
 
 
 def plot_annual_returns(daily: pd.DataFrame, outdir: str) -> None:
     annual = (1 + daily).resample("YE").prod() - 1
+    cols   = [c for c in STRATEGIES if c in annual.columns]
+    width  = 0.8 / len(cols)
+    x      = np.arange(len(annual))
+
     fig, ax = plt.subplots(figsize=(14, 5))
-    width   = 0.15
-    x       = np.arange(len(annual))
-    cols    = [c for c in STRATEGIES if c in annual.columns]
-    for i, col in enumerate(cols):
-        offset = (i - len(cols) / 2 + 0.5) * width
-        c = STRAT_COLORS.get(col, "gray")
-        bars = ax.bar(x + offset, annual[col] * 100, width=width,
-                      label=col, color=c, edgecolor="black", lw=0.5)
-    ax.axhline(0, color="black", lw=0.7)
-    ax.set_xticks(x)
-    ax.set_xticklabels(annual.index.year, rotation=45)
-    ax.set_ylabel("Annual return (%)")
-    ax.set_title("Annual returns by strategy  (CRSP 2002–2024)")
-    ax.legend(ncol=len(cols), fontsize=9)
     years = list(annual.index.year)
     for start, end in CRISIS_PERIODS.values():
-        s_year = pd.Timestamp(start).year
-        e_year = pd.Timestamp(end).year
+        s_year, e_year = pd.Timestamp(start).year, pd.Timestamp(end).year
         xs = [i for i, y in enumerate(years) if s_year <= y <= e_year]
         if xs:
             ax.axvspan(min(xs) - 0.5, max(xs) + 0.5,
-                       color="#fce4e4", alpha=0.4, zorder=0)
-    plt.tight_layout()
-    plt.savefig(f"{outdir}/annual_returns.png", dpi=150)
-    plt.close()
+                       color=_CRISIS_SHADE, alpha=0.4, zorder=0)
+    for i, col in enumerate(cols):
+        offset = (i - len(cols) / 2 + 0.5) * width
+        ax.bar(x + offset, annual[col], width=width * 0.92,
+               label=col, color=_col_color(col, daily.columns),
+               edgecolor="white", alpha=0.85)
+    ax.axhline(0, color="black", lw=0.7)
+    ax.set_xticks(x)
+    ax.set_xticklabels(annual.index.year, rotation=45, ha="right")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
+    ax.set_ylabel("Annual return")
+    ax.set_title("Annual returns by strategy  (CRSP 2002–2024)")
+    ax.legend(ncol=len(cols), fontsize=9)
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/annual_returns.png", bbox_inches="tight")
+    plt.close(fig)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -294,8 +279,8 @@ def main(argv=None):
             vals = sub[sub["regime"] == regime]["Sharpe"].dropna()
             if len(vals):
                 regime_rows.append({
-                    "strategy": strat,
-                    "regime":   regime,
+                    "strategy":    strat,
+                    "regime":      regime,
                     "mean_sharpe": float(vals.mean()),
                     "n_periods":   len(vals),
                 })
@@ -304,7 +289,7 @@ def main(argv=None):
 
     print("\n=== Sharpe by regime ===")
     pivot_regime = regime_summary.pivot(index="strategy", columns="regime",
-                                         values="mean_sharpe")
+                                        values="mean_sharpe")
     if "crisis" in pivot_regime.columns and "calm" in pivot_regime.columns:
         pivot_regime["crisis_to_calm"] = (
             pivot_regime["crisis"] / pivot_regime["calm"].abs()

@@ -34,7 +34,7 @@ START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
 
 # Default grid
-DEFAULT_LOOKBACKS = "63, 126, 252, 504"
+DEFAULT_LOOKBACKS = "126, 252, 504"
 DEFAULT_HISTORY = 504
 DEFAULT_COSTS = "0, 2, 5, 10, 20"
 DEFAULT_REBALANCE = 21
@@ -226,7 +226,7 @@ def main(argv=None) -> None:
     p.add_argument("--rebalance", type=int, default=DEFAULT_REBALANCE,
                    help="rebalance frequency in trading days (fixed)")
     p.add_argument("--strategies",
-                   default="EW,HMVA",
+                   default="EW,HMVA,HMVA-mv",
                    help="comma-separated strategy names to include")
     p.add_argument("--out", default="results/cost_robustness")
     args = p.parse_args(argv)

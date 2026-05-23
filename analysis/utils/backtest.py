@@ -759,7 +759,7 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
         return hrp_strategy(cov_fn, linkage_method=linkage_method, kf_tp=False)
     
     def mvo_with(cov_fn, risk_aversion=2.5):
-        return max_utility_strategy(cov_fn, gamma=risk_aversion, kf_tp=True)
+        return max_utility_strategy(cov_fn, gamma=risk_aversion, kf_tp=False)
     
     def vb_hrp_with(cov_fn,
                     bisect_method,
