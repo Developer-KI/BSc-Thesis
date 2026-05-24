@@ -1,33 +1,3 @@
-"""
-=============================================================================
-crsp_data.py - CRSP data loaders for the HRP experiment
-=============================================================================
-
-Three responsibilities:
-
-1. load_crsp_returns()
-   Read the CRSP daily file (long format), pivot to wide returns matrix.
-   Handles chunked reading so a multi-GB CSV does not OOM.
-
-2. load_constituents()
-   Read the S&P 500 historical constituents file.  Expected columns:
-   'permno, start, ending' (range format).  Each row says "PERMNO P was
-   in the S&P 500 between start and ending (inclusive)".  A given PERMNO
-   may appear multiple times (re-additions to the index).
-
-3. UniverseFn
-   Given a date, return the set of PERMNOs that were S&P 500 members on
-   that date.  Implemented with a sorted-event scheme so each lookup is
-   O(log n) and total memory is O(n_events).
-
-The output of load_crsp_returns is shaped exactly like get_returns from
-hrp_lib (DataFrame indexed by date, columns = asset IDs, values = log
-returns) except that the asset IDs are integer PERMNOs and the matrix
-is sparse (cells are NaN whenever a stock was not trading).  The
-backtest_pit function in hrp_lib handles those NaNs at point-in-time.
-=============================================================================
-"""
-
 from __future__ import annotations
 
 from typing import Iterable, Optional, Set
@@ -35,10 +5,6 @@ from typing import Iterable, Optional, Set
 import numpy as np
 import pandas as pd
 
-
-# =============================================================================
-# 1. Returns loader
-# =============================================================================
 
 def load_crsp_returns(data_csv: str,
                       *,
@@ -268,10 +234,6 @@ def load_market_cap(data_csv: str,
     return cap_wide
 
 
-# =============================================================================
-# 2. Constituents loader
-# =============================================================================
-
 def load_constituents(constituents_csv: str,
                       *,
                       permno_col: str = "permno",
@@ -297,10 +259,6 @@ def load_constituents(constituents_csv: str,
               f"{df['permno'].nunique():,} unique PERMNOs")
     return df
 
-
-# =============================================================================
-# 3. Universe function (with optional market cap filtering)
-# =============================================================================
 
 class UniverseFn:
     """

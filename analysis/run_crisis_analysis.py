@@ -45,7 +45,7 @@ _PALETTE = _plt._PALETTE
 
 RESULTS_DIR = "results"
 
-STRATEGIES = ["HMVA", "HMVA-mv", "HRP", "MVO", "EW", "SPY-K"]
+STRATEGIES = ["HMVA", "HMVA-mv", "HRP", "MVO", "GMV", "EW", "SPY-K"]
 
 CRISIS_PERIODS: Dict[str, Tuple[str, str]] = {
     "Dot-com trough\n(2002)":       ("2002-01-01", "2002-10-31"),

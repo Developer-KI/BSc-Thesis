@@ -134,7 +134,7 @@ def plot_results(df: pd.DataFrame, outdir: Path) -> None:
     ax.set_xlabel("Cluster size  n", fontsize=11)
     ax.set_ylabel("Score(heuristic) / Score(brute-force)", fontsize=10)
     ax.set_title("Heuristic approximation quality\n"
-                 "objective: 0.5*Cov(EW_A,EW_B) + 0.5*rho(EW_A,EW_B)", fontsize=11)
+                 "objective: Cov(EW_A,EW_B) + rho(EW_A,EW_B)", fontsize=11)
     ax.set_xticks(n_vals)
     ax.legend(fontsize=9)
     plt.tight_layout()
@@ -179,8 +179,8 @@ def plot_results(df: pd.DataFrame, outdir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    CLUSTER_SIZES = [4, 6, 8, 10, 12]
-    N_REPS        = 300
+    CLUSTER_SIZES = [12, 14, 16, 18, 20]
+    N_REPS        = 100
     OUTDIR        = Path(__file__).resolve().parent.parent / "results" / "split_comparison"
 
     print("=== HMVA heuristic vs. brute-force split comparison ===")

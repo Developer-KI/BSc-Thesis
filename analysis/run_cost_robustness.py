@@ -40,6 +40,8 @@ DEFAULT_COSTS = "0, 2, 5, 10, 20"
 DEFAULT_REBALANCE = 21
 DEFAULT_TOP_K = 100
 
+DEFAULT_STRATEGIES = "EW,HMVA,HMVA-mv"
+
 RISK_FREE_BPS = 0.0
 
 # -----------------------------------------------------------------------------
@@ -226,7 +228,7 @@ def main(argv=None) -> None:
     p.add_argument("--rebalance", type=int, default=DEFAULT_REBALANCE,
                    help="rebalance frequency in trading days (fixed)")
     p.add_argument("--strategies",
-                   default="EW,HMVA,HMVA-mv",
+                   default=DEFAULT_STRATEGIES,
                    help="comma-separated strategy names to include")
     p.add_argument("--out", default="results/cost_robustness")
     args = p.parse_args(argv)

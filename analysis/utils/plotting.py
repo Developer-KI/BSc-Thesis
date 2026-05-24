@@ -31,7 +31,6 @@ def _save(fig: plt.Figure, save_path: Optional[str]) -> plt.Figure:
     return fig
 
 
-# ── 1. Dendrogram ─────────────────────────────────────────────────────────────
 def plot_dendrogram(
     link,
     labels: List[str],
@@ -56,7 +55,6 @@ def plot_dendrogram(
     return _save(fig, save_path)
 
 
-# ── 2. Cumulative Returns ─────────────────────────────────────────────────────
 def plot_cumulative_returns(
     returns_df: pd.DataFrame,
     title: str = "Cumulative Returns",
@@ -82,7 +80,6 @@ def plot_cumulative_returns(
     return _save(fig, save_path)
 
 
-# ── 3. Drawdown ───────────────────────────────────────────────────────────────
 def plot_drawdown(
     returns_df: pd.DataFrame,
     title: str = "Drawdown",
@@ -107,7 +104,6 @@ def plot_drawdown(
     return _save(fig, save_path)
 
 
-# ── 4. Rolling Sharpe ─────────────────────────────────────────────────────────
 def plot_rolling_sharpe(
     returns_df: pd.DataFrame,
     window: int = 63,
@@ -136,7 +132,6 @@ def plot_rolling_sharpe(
     return _save(fig, save_path)
 
 
-# ── 5. Rolling Volatility ─────────────────────────────────────────────────────
 def plot_rolling_volatility(
     returns_df: pd.DataFrame,
     window: int = 63,
@@ -164,7 +159,6 @@ def plot_rolling_volatility(
     return _save(fig, save_path)
 
 
-# ── 6. Sharpe Bar Chart ───────────────────────────────────────────────────────
 def plot_sharpe_bar(
     sharpe_series: pd.Series,
     title: str = "Average Sharpe Ratio by Strategy",
@@ -188,7 +182,6 @@ def plot_sharpe_bar(
     return _save(fig, save_path)
 
 
-# ── 7. Performance Summary (2×2 panel) ────────────────────────────────────────
 def plot_performance_summary(
     stats_df: pd.DataFrame,
     save_path: Optional[str] = None,
@@ -227,7 +220,6 @@ def plot_performance_summary(
     return _save(fig, save_path)
 
 
-# ── 8. Correlation Heatmap ────────────────────────────────────────────────────
 def plot_correlation_heatmap(
     returns_df: pd.DataFrame,
     title: str = "Correlation Matrix",
@@ -257,7 +249,6 @@ def plot_correlation_heatmap(
     return _save(fig, save_path)
 
 
-# ── 9. Weights Heatmap ────────────────────────────────────────────────────────
 def plot_weights_heatmap(
     weights_df: pd.DataFrame,
     title: str = "Portfolio Weights Over Time",
@@ -288,7 +279,6 @@ def plot_weights_heatmap(
     return _save(fig, save_path)
 
 
-# ── 10. Regime Detection ─────────────────────────────────────────────────────
 def plot_regime_detection(
     returns: pd.Series,
     regime_labels,
@@ -374,7 +364,6 @@ def plot_regime_detection(
     return _save(fig, save_path)
 
 
-# ── 11. Stacked Area Weights ──────────────────────────────────────────────────
 def plot_weights_area(
     weights_df: pd.DataFrame,
     title: str = "Portfolio Weight Allocation Over Time",
@@ -413,7 +402,6 @@ def plot_weights_area(
     return _save(fig, save_path)
 
 
-# ── 12. Monthly Returns Calendar Heatmap ─────────────────────────────────────
 def plot_monthly_returns_heatmap(
     returns_series: pd.Series,
     title: str = "Monthly Returns Heatmap",
@@ -468,7 +456,6 @@ def plot_monthly_returns_heatmap(
     return _save(fig, save_path)
 
 
-# ── 13. Return Distribution ───────────────────────────────────────────────────
 def plot_return_distribution(
     returns_df: pd.DataFrame,
     title: str = "Return Distribution",
@@ -524,7 +511,6 @@ def plot_return_distribution(
     return _save(fig, save_path)
 
 
-# ── 14. Annual Returns ────────────────────────────────────────────────────────
 def plot_annual_returns(
     returns_df: pd.DataFrame,
     title: str = "Annual Returns by Strategy",
@@ -558,7 +544,6 @@ def plot_annual_returns(
     return _save(fig, save_path)
 
 
-# ── 15. Risk-Return Scatter ───────────────────────────────────────────────────
 def plot_risk_return_scatter(
     returns_df: pd.DataFrame,
     risk_free_rate: float = 0.04,
@@ -602,7 +587,6 @@ def plot_risk_return_scatter(
     return _save(fig, save_path)
 
 
-# ── 16. Rolling Beta ──────────────────────────────────────────────────────────
 def plot_rolling_beta(
     returns_df: pd.DataFrame,
     benchmark_col: str,
@@ -634,7 +618,6 @@ def plot_rolling_beta(
     return _save(fig, save_path)
 
 
-# ── 17. Comprehensive Metrics Table ──────────────────────────────────────────
 def plot_metrics_table(
     metrics_df: pd.DataFrame,
     title: str = "Comprehensive Performance Metrics",

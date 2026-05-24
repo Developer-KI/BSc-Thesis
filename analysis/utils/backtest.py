@@ -20,27 +20,8 @@ from scipy.stats import norm
 from scipy.optimize import minimize
 import nonlinshrink as nls
 
-
 # =============================================================================
-# COVARIANCE ESTIMATORS
-# =============================================================================
-
-def cov_sample(X: np.ndarray) -> np.ndarray:
-    """Plain-vanilla sample covariance Σ̂ = (T-1)^{-1} (X-μ)' (X-μ)."""
-    return np.cov(X, rowvar=False)
-
-def cov_nonlinear_shrink(X: np.ndarray) -> np.ndarray:
-    """Wrapper for the nonlinshrink package"""
-
-    # The package automatically demeans the data by default
-    # 'k' is an optional parameter to specify effective degrees of freedom already subtracted
-    return nls.shrink_cov(X, k=0)
-
-def cov_ewa_nls(window: np.ndarray) -> np.ndarray:
-    return cov_nonlinear_shrink(_ewma_pseudo(window, halflife=21))
-    
-# =============================================================================
-# Estimation helpers
+# Covariance Estimation Helpers
 # =============================================================================
 
 def _ensure_pd(M: np.ndarray, jitter: float = 1e-10) -> np.ndarray:
@@ -76,11 +57,30 @@ def _cov_to_corr(cov: np.ndarray) -> np.ndarray:
     std = np.sqrt(np.diag(cov))
     return np.clip(cov / np.outer(std, std), -1.0, 1.0)
 
+
 # =============================================================================
-# Return estimation
+# Covariance Estimation
 # =============================================================================
 
-def mu_BL_momentum(
+def cov_sample(X: np.ndarray) -> np.ndarray:
+    """Plain-vanilla sample covariance Σ̂ = (T-1)^{-1} (X-μ)' (X-μ)."""
+    return np.cov(X, rowvar=False)
+
+def cov_nonlinear_shrink(X: np.ndarray) -> np.ndarray:
+    """Wrapper for the nonlinshrink package"""
+
+    # The package automatically demeans the data by default
+    # 'k' is an optional parameter to specify effective degrees of freedom already subtracted
+    return nls.shrink_cov(X, k=0)
+
+def cov_ewa_nls(window: np.ndarray) -> np.ndarray:
+    return cov_nonlinear_shrink(_ewma_pseudo(window, halflife=21))
+
+# =============================================================================
+# Return Estimation
+# =============================================================================
+
+def mu_BL_trend(
     window: np.ndarray,
     cov: np.ndarray,
     skip_days: int = 21,
@@ -113,7 +113,7 @@ def mu_BL_momentum(
         return pi_mu
 
 # =============================================================================
-# Estimation smoother
+# Weight Smoother
 # =============================================================================
   
 def _kf_smooth_weights(
@@ -160,7 +160,7 @@ def _kf_smooth_weights(
     return w / s if s > 1e-12 else np.ones(N) / N
 
 # =============================================================================
-# PORTFOLIO ALLOCATORS
+# Portfolio Allocation
 # =============================================================================
 
 def _cluster_var(cov: np.ndarray, items: List[int]) -> float:
@@ -320,7 +320,7 @@ def max_utility_strategy(
 
     def _alloc_fn(cov: np.ndarray) -> np.ndarray:
         window = cache.get("window", np.zeros((1, cov.shape[0])))
-        mu = mu_BL_momentum(window, cov)
+        mu = mu_BL_trend(window, cov)
         w = max_utility_weights(cov, mu, gamma=gamma)
 
         if kf_tp and prev_w["w"] is not None and kf_cache["mu_prev"] is not None:
@@ -571,7 +571,7 @@ def _vb_bisect_vol(node: dict, pw: float,
     }
 
 
-def vol_hrp_bl_weights(cov: np.ndarray,
+def vol_bl_weights(cov: np.ndarray,
                         mu: np.ndarray,
                         rf: float = 0.0,
                         bf_threshold: int = 10,
@@ -609,12 +609,12 @@ def vol_hrp_bl_weights(cov: np.ndarray,
     return w
 
 
-def vol_hrp_bl_strategy(
+def vol_bl_strategy(
     cov_fn: Callable,
     rf: float = 0.0,
     bf_threshold: int = 10,
     bisect_method: str = "sharpe",
-    ewma_halflife: Optional[float] = None,
+    ewma_halflife: Optional[float] = 21,
     skip_days: Optional[int] = 21,
     kf_tp: bool = True,
 ) -> Tuple[Callable, Callable]:
@@ -645,9 +645,9 @@ def vol_hrp_bl_strategy(
     def _alloc_fn(cov: np.ndarray) -> np.ndarray:
         N = cov.shape[0]
         window = cache.get("window", np.zeros((1, N)))
-        mu = mu_BL_momentum(window, cov, skip_days=skip_days)
+        mu = mu_BL_trend(window, cov, skip_days=skip_days)
 
-        w = vol_hrp_bl_weights(
+        w = vol_bl_weights(
             cov, mu, rf=rf, bf_threshold=bf_threshold,
             bisect_method=bisect_method,
         )
@@ -665,7 +665,7 @@ def vol_hrp_bl_strategy(
 
 
 # =============================================================================
-# 4. BACKTEST ENGINE WITH WEIGHT DRIFT AND TRANSACTION COSTS
+# Bakctest Engine
 # =============================================================================
 
 # A "strategy" is a (cov_estimator, allocator) pair.
@@ -753,31 +753,13 @@ def backtest(returns: pd.DataFrame,
 # Point-in-time backtest with time-varying universe (CRSP S&P 500)
 # ---------------------------------------------------------------------------
 
-def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None,
-                         ) -> StrategyMap:
-    def hrp_with(cov_fn, linkage_method="single"):
-        return hrp_strategy(cov_fn, linkage_method=linkage_method, kf_tp=False)
-    
-    def mvo_with(cov_fn, risk_aversion=2.5):
-        return max_utility_strategy(cov_fn, gamma=risk_aversion, kf_tp=False)
-    
-    def vb_hrp_with(cov_fn,
-                    bisect_method,
-                    # For portfolio construction always 1 month even for longer rebalances, due to the nature of tree allocations
-                    ewma_halflife: float = 21, skip_days: int = 21,
-                    kf_tp: bool = True):
-        return vol_hrp_bl_strategy(
-            cov_fn,
-            bisect_method=bisect_method,
-            ewma_halflife=ewma_halflife, skip_days=skip_days,
-            kf_tp=kf_tp,
-        )
-
+def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> StrategyMap:
     strategies: StrategyMap = {
-        "HMVA":     vb_hrp_with(cov_nonlinear_shrink, bisect_method="sharpe"),
-        "HMVA-mv":  vb_hrp_with(cov_nonlinear_shrink, bisect_method="vol"),
-        "HRP":      hrp_with(cov_ewa_nls),
-        "MVO":      mvo_with(cov_ewa_nls),
+        "HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe"),
+        "HMVA-mv":  vol_bl_strategy(cov_nonlinear_shrink, bisect_method="vol"),
+        "HRP":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
+        "MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False),
+        "GMV":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
         "EW":       (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
@@ -953,7 +935,7 @@ def backtest_pit(returns_wide: pd.DataFrame,
 
 
 # =============================================================================
-# PERFORMANCE METRICS
+# Performance Metrics
 # =============================================================================
 
 def _extra_metrics(r: pd.Series) -> Dict[str, float]:
@@ -1046,7 +1028,7 @@ def compute_metrics_pit(daily_returns: pd.DataFrame,
 
 
 # =============================================================================
-# STATISTICAL TESTS
+# Statistical Tests
 # =============================================================================
 
 def diebold_mariano(d1: pd.Series, d2: pd.Series,
@@ -1133,7 +1115,7 @@ def adjust_pvalues(pvals: np.ndarray, method: str = "holm") -> np.ndarray:
 
 
 # =============================================================================
-# PLOTTING
+# Plotting
 # =============================================================================
 
 def _ensure_dir(path: str) -> str:
