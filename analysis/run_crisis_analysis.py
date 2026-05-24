@@ -35,6 +35,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
+import matplotlib.dates as mdates
 from matplotlib.colors import TwoSlopeNorm
 import utils.plotting as _plt
 
@@ -156,6 +157,10 @@ def plot_crisis_equity(daily: pd.DataFrame, outdir: str) -> None:
         ax.set_title(label.replace("\n", "  "), fontsize=10)
         ax.set_ylabel("Growth of $1")
         ax.yaxis.set_major_formatter(mtick.FormatStrFormatter("%.2f"))
+        locator = mdates.AutoDateLocator(minticks=4, maxticks=7)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        ax.tick_params(axis="x", rotation=30)
         ax.legend(fontsize=7)
     fig.tight_layout()
     fig.savefig(f"{outdir}/crisis_equity.png", bbox_inches="tight")

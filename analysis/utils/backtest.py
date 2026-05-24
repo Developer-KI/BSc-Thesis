@@ -101,7 +101,8 @@ def mu_BL_trend(
     """
     T, N = window.shape
 
-    pi_mu = np.ones(N)
+    # Prior is 1% expected return from every asset
+    pi_mu = np.ones(N) / 100
 
     signal_window = window[:-skip_days] if skip_days > 0 and T > skip_days else window
     Q = signal_window.mean(axis=0)
@@ -377,7 +378,7 @@ def make_spyk_allocator(cap_wide: pd.DataFrame) -> Callable:
 
 
 # =============================================================================
-# HMVO
+# HMVA
 # =============================================================================
 
 def _vb_merge_cost(cross: float, n_a: int, n_b: int,

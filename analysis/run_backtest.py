@@ -47,7 +47,7 @@ def riskfree_proxy(dates: pd.DatetimeIndex) -> pd.Series:
 # -----------------------------------------------------------------------------
 
 def main(argv: List[str] = None) -> None:
-    p = argparse.ArgumentParser(description="HRP x CRSP S&P 500 experiment")
+    p = argparse.ArgumentParser(description="CRSP S&P 500 experiment")
     p.add_argument("--data", default=DATA_CSV)
     p.add_argument("--constituents", default=CONSTITUENTS_CSV)
     p.add_argument("--start", default=START_DATE)
