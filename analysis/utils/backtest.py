@@ -101,7 +101,7 @@ def mu_BL_trend(
     """
     T, N = window.shape
 
-    # Prior is 1% expected return from every asset
+    # Prior is 1% expected return from every asset (positive view)
     pi_mu = np.ones(N) / 100
 
     signal_window = window[:-skip_days] if skip_days > 0 and T > skip_days else window
