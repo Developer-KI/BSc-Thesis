@@ -35,15 +35,13 @@ END_DATE = "2025-01-01"
 # Default grid
 DEFAULT_LOOKBACKS = "126, 252, 504"
 DEFAULT_HISTORY = 504
-DEFAULT_COSTS = "0, 2, 5, 10, 20"
+DEFAULT_COSTS = "0, 2, 5, 10, 20, 30"
 DEFAULT_REBALANCE = 21
 DEFAULT_TOP_K = 100
 
 DEFAULT_STRATEGIES = "EW, SPY-K, HMVA, HMVA-mv"
 
 BENCHMARK_STRATEGIES = {"EW", "SPY-K"}
-
-RISK_FREE_BPS = 0.0
 
 # -----------------------------------------------------------------------------
 # Strategy filtering
@@ -336,9 +334,6 @@ def main(argv=None) -> None:
         top_k=args.top_k,
     )
 
-    daily_rate = (1 + RISK_FREE_BPS)**(1/365) - 1
-    rf_daily   = pd.Series(daily_rate, index=returns_wide.index)
-
     cap_wide = universe_fn._cap_wide
 
     # -- 2.  Run the sweep -------------------------------------------------
@@ -348,7 +343,6 @@ def main(argv=None) -> None:
         costs=costs,
         rebalance=args.rebalance,
         strategies_keep=strategies_keep,
-        rf_daily=rf_daily,
         market_cap_wide=cap_wide,
     )
 
@@ -370,13 +364,6 @@ def main(argv=None) -> None:
         print("\n=== Active strategies — summary across robustness cells ===")
         print(summary.round(4).to_string())
         summary.to_csv(f"{args.out}/robustness_summary.csv")
-
-        make_summary_table_plot(
-            summary,
-            title="Robustness Summary: Active Strategies vs EW & SPY-K benchmarks"
-                  " (mean across lookback × cost grid)",
-            save_path=f"{args.out}/robustness_metrics_table.png",
-        )
 
     # -- 5.  Heatmaps — each active strategy vs EW and vs SPY-K separately --
     make_heatmaps(df_clean, args.out)

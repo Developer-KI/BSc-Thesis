@@ -17,10 +17,8 @@ Calm periods (for contrast):
 
 Outputs in results/crisis/:
   period_metrics.csv           per-period, per-strategy metrics
-  rolling_sharpe.png           63-day rolling Sharpe with crisis shading
   crisis_equity.png            equity curves for each crisis window (2×2 grid)
   period_sharpe_heatmap.png    heatmap: Sharpe by period × strategy
-  monthly_heatmap_HMVA.png     calendar heatmap of HMVA monthly returns
   regime_summary.csv           crisis vs calm aggregated Sharpe comparison
 """
 
@@ -71,13 +69,6 @@ def _col_color(col: str, columns) -> str:
     return _PALETTE[idx % len(_PALETTE)]
 
 
-def _shade_crises(ax) -> None:
-    for label, (s, e) in CRISIS_PERIODS.items():
-        ax.axvspan(pd.Timestamp(s), pd.Timestamp(e),
-                   color=_CRISIS_SHADE, alpha=0.65, zorder=0,
-                   label=f"Crisis: {label.splitlines()[0]}")
-
-
 def _compute_period_metrics(daily: pd.DataFrame,
                              start: str,
                              end: str) -> pd.DataFrame:
@@ -116,27 +107,6 @@ def _load_daily(results_dir: str) -> pd.DataFrame:
 
 
 # ── plots ─────────────────────────────────────────────────────────────────────
-
-def plot_rolling_sharpe(daily: pd.DataFrame, outdir: str) -> None:
-    window = 63
-    roll = daily.rolling(window).apply(
-        lambda r: (r.mean() / r.std() * np.sqrt(252)) if r.std() > 0 else np.nan,
-        raw=True,
-    )
-    fig, ax = plt.subplots(figsize=(14, 5))
-    _shade_crises(ax)
-    ax.axhline(0, color="black", lw=0.6, ls="--")
-    for col in daily.columns:
-        lw = 2.2 if col == "HMVA" else 1.2
-        ax.plot(roll.index, roll[col],
-                color=_col_color(col, daily.columns), lw=lw, label=col)
-    ax.set_title(f"{window}-day rolling Sharpe ratio by strategy  (CRSP 2002–2024)")
-    ax.set_ylabel("Rolling Sharpe (annualised)")
-    ax.set_ylim(-4, 5)
-    ax.legend(ncol=3, fontsize=8, loc="upper left")
-    fig.tight_layout()
-    fig.savefig(f"{outdir}/rolling_sharpe.png", bbox_inches="tight")
-    plt.close(fig)
 
 
 def plot_crisis_equity(daily: pd.DataFrame, outdir: str) -> None:
@@ -200,18 +170,6 @@ def plot_period_sharpe_heatmap(all_metrics: pd.DataFrame, outdir: str) -> None:
     fig.tight_layout()
     fig.savefig(f"{outdir}/period_sharpe_heatmap.png", bbox_inches="tight")
     plt.close(fig)
-
-
-def plot_monthly_heatmap(daily: pd.DataFrame, strategy: str, outdir: str) -> None:
-    if strategy not in daily.columns:
-        return
-    monthly = (1 + daily[strategy].dropna()).resample("ME").prod() - 1
-    _plt.plot_monthly_returns_heatmap(
-        monthly,
-        title=f"Monthly returns: {strategy}  (CRSP 2002–2024)",
-        save_path=f"{outdir}/monthly_heatmap_{strategy.replace('-', '_')}.png",
-    )
-    plt.close("all")
 
 
 def plot_annual_returns(daily: pd.DataFrame, outdir: str) -> None:
@@ -309,14 +267,9 @@ def main(argv=None):
 
     # ── generate plots ────────────────────────────────────────────────────────
     print("\n[crisis] generating plots ...")
-    plot_rolling_sharpe(daily, args.out)
     plot_crisis_equity(daily, args.out)
     plot_period_sharpe_heatmap(period_metrics, args.out)
     plot_annual_returns(daily, args.out)
-
-    for strat in ["HMVA", "EW"]:
-        if strat in daily.columns:
-            plot_monthly_heatmap(daily, strat, args.out)
 
     print(f"\n[crisis] done → {args.out}/")
 

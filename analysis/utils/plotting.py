@@ -59,6 +59,7 @@ def plot_cumulative_returns(
     returns_df: pd.DataFrame,
     title: str = "Cumulative Returns",
     save_path: Optional[str] = None,
+    log_scale: bool = False,
 ) -> plt.Figure:
     """
     Plots cumulative wealth index (1 + r).cumprod() for each strategy column.
@@ -66,6 +67,7 @@ def plot_cumulative_returns(
     Parameters
     ----------
     returns_df : DataFrame of period returns, one column per strategy
+    log_scale  : if True, use a log scale on the y-axis
     """
     cum = (1 + returns_df).cumprod()
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -75,7 +77,11 @@ def plot_cumulative_returns(
     ax.set_title(title)
     ax.set_ylabel("Growth of $1")
     ax.legend(loc="upper left", fontsize=9)
-    ax.yaxis.set_major_formatter(mtick.FormatStrFormatter("%.2f"))
+    if log_scale:
+        ax.set_yscale("log")
+        ax.yaxis.set_major_formatter(mtick.FormatStrFormatter("%.2f"))
+    else:
+        ax.yaxis.set_major_formatter(mtick.FormatStrFormatter("%.2f"))
     fig.tight_layout()
     return _save(fig, save_path)
 
@@ -461,12 +467,18 @@ def plot_return_distribution(
     title: str = "Return Distribution",
     bins: int = 35,
     save_path: Optional[str] = None,
+    subplot_order: Optional[List[str]] = None,
 ) -> plt.Figure:
     """
     Histogram + KDE + normal overlay for each strategy with key stats annotated.
+
+    subplot_order : if provided, only these columns are plotted in that order;
+                    a list of exactly 4 names forces a 2×2 grid layout.
     """
+    if subplot_order is not None:
+        returns_df = returns_df[[c for c in subplot_order if c in returns_df.columns]]
     n = len(returns_df.columns)
-    cols = min(n, 3)
+    cols = 2 if (subplot_order is not None and len(subplot_order) == 4) else min(n, 3)
     rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4.5 * rows), squeeze=False)
     axes_flat = axes.flatten()

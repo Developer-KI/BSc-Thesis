@@ -32,18 +32,6 @@ def _ensure_pd(M: np.ndarray, jitter: float = 1e-10) -> np.ndarray:
     return V @ np.diag(w) @ V.T
 
 def _ewma_pseudo(returns: np.ndarray, halflife: float) -> np.ndarray:
-    """
-    Rescale rows of *returns* so that pseudo.T @ pseudo / T == cov_ewma(returns, halflife).
-
-    This lets any covariance estimator that internally computes a sample
-    covariance (NLS, LW, POET, …) operate on exponentially front-weighted data
-    without rewriting its internals.  The mapping is:
-
-        pseudo[t] = sqrt(w_t * T) * r_t
-        => pseudo.T @ pseudo / T = Σ_t w_t * r_t r_t' = EWMA cov
-
-    where w_t = (1-λ) λ^{T-1-t}, normalised to sum to 1.
-    """
     if halflife <= 0:
         raise ValueError("halflife must be positive")
     T = returns.shape[0]
@@ -63,18 +51,14 @@ def _cov_to_corr(cov: np.ndarray) -> np.ndarray:
 # =============================================================================
 
 def cov_sample(X: np.ndarray) -> np.ndarray:
-    """Plain-vanilla sample covariance Σ̂ = (T-1)^{-1} (X-μ)' (X-μ)."""
     return np.cov(X, rowvar=False)
 
 def cov_nonlinear_shrink(X: np.ndarray) -> np.ndarray:
-    """Wrapper for the nonlinshrink package"""
-
-    # The package automatically demeans the data by default
-    # 'k' is an optional parameter to specify effective degrees of freedom already subtracted
+    # 'k' is an optional parameter introduced by the package to specify effective degrees of freedom already subtracted
     return nls.shrink_cov(X, k=0)
 
-def cov_ewa_nls(window: np.ndarray) -> np.ndarray:
-    return cov_nonlinear_shrink(_ewma_pseudo(window, halflife=21))
+def cov_ewa_nls(window: np.ndarray, ewma_halflife: int = 21) -> np.ndarray:
+    return cov_nonlinear_shrink(_ewma_pseudo(window, halflife=ewma_halflife))
 
 # =============================================================================
 # Return Estimation
@@ -88,7 +72,7 @@ def mu_BL_trend(
     """
     Black-Litterman type posterior expected returns
 
-    Prior:  π = 1
+    Prior:  π = universe-mean return ceiled to full percentage points
     Views:  one absolute view per asset, 
     Q = skip-x-days momentum signal
     P = I_N (absolute views)
@@ -101,8 +85,9 @@ def mu_BL_trend(
     """
     T, N = window.shape
 
-    # Prior is 1% expected return from every asset (positive view)
-    pi_mu = np.ones(N) / 100
+    # Prior cross-sectional mean remormalized to full procentage return 
+    # using ceil for optimistic prior views (0.0000001 -> 0.01 = 1%) -> 0.77 Sharpe
+    pi_mu = np.ones(N) * (np.ceil(window.mean() * 100) / 100.0)
 
     signal_window = window[:-skip_days] if skip_days > 0 and T > skip_days else window
     Q = signal_window.mean(axis=0)
@@ -501,8 +486,7 @@ def _build_vb_tree(cov_arr: np.ndarray, n: int,
 
 
 def _vb_bisect_sharpe(node: dict, pw: float,
-                       cov_arr: np.ndarray, mu_arr: np.ndarray,
-                       rf: float) -> Dict[int, float]:
+                       cov_arr: np.ndarray, mu_arr: np.ndarray) -> Dict[int, float]:
     """Allocate weight pw between subtrees proportional to non-negative cluster Sharpe."""
     if node is None or not node["indices"]:
         return {}
@@ -518,7 +502,7 @@ def _vb_bisect_sharpe(node: dict, pw: float,
         sub = cov_arr[np.ix_(items, items)]
         sigma = float(np.sqrt(max(float(sub.sum()) / (n * n), 0.0)))
         mu = float(mu_arr[items].mean())
-        return max((mu - rf) / sigma, 0.0) if sigma > 1e-12 else 0.0
+        return max((mu) / sigma, 0.0) if sigma > 1e-12 else 0.0
 
     sl, sr = _sharpe(left["indices"]), _sharpe(right["indices"])
     tot = sl + sr
@@ -532,8 +516,8 @@ def _vb_bisect_sharpe(node: dict, pw: float,
         v_tot = v_L + v_R
         alpha = v_R / v_tot if v_tot > 1e-12 else 0.5
     return {
-        **_vb_bisect_sharpe(left,  pw * alpha,       cov_arr, mu_arr, rf),
-        **_vb_bisect_sharpe(right, pw * (1 - alpha), cov_arr, mu_arr, rf),
+        **_vb_bisect_sharpe(left,  pw * alpha,       cov_arr, mu_arr),
+        **_vb_bisect_sharpe(right, pw * (1 - alpha), cov_arr, mu_arr),
     }
 
 
@@ -574,7 +558,6 @@ def _vb_bisect_vol(node: dict, pw: float,
 
 def vol_bl_weights(cov: np.ndarray,
                         mu: np.ndarray,
-                        rf: float = 0.0,
                         bf_threshold: int = 10,
                         bisect_method: str = "sharpe",
                         ) -> np.ndarray:
@@ -600,7 +583,7 @@ def vol_bl_weights(cov: np.ndarray,
     if bisect_method == "vol":
         w_dict = _vb_bisect_vol(tree, 1.0, cov_pd)
     else:
-        w_dict = _vb_bisect_sharpe(tree, 1.0, cov_pd, mu_arr, rf)
+        w_dict = _vb_bisect_sharpe(tree, 1.0, cov_pd, mu_arr)
     w = np.zeros(N)
     for i, wt in w_dict.items():
         w[i] = wt
@@ -612,11 +595,8 @@ def vol_bl_weights(cov: np.ndarray,
 
 def vol_bl_strategy(
     cov_fn: Callable,
-    rf: float = 0.0,
     bf_threshold: int = 10,
     bisect_method: str = "sharpe",
-    ewma_halflife: Optional[float] = 21,
-    skip_days: Optional[int] = 21,
     kf_tp: bool = True,
 ) -> Tuple[Callable, Callable]:
     """
@@ -638,23 +618,25 @@ def vol_bl_strategy(
     kf_cache: Dict[str, Optional[np.ndarray]] = {"mu_prev": None}
 
     def _cov_fn(window: np.ndarray) -> np.ndarray:
-        data = _ewma_pseudo(window, ewma_halflife) if ewma_halflife is not None else window
-        cov = cov_fn(data)
+        cov = cov_fn(window)
         cache["window"] = window
         return cov
 
     def _alloc_fn(cov: np.ndarray) -> np.ndarray:
         N = cov.shape[0]
         window = cache.get("window", np.zeros((1, N)))
-        mu = mu_BL_trend(window, cov, skip_days=skip_days)
+        mu = mu_BL_trend(window, cov)
 
         w = vol_bl_weights(
-            cov, mu, rf=rf, bf_threshold=bf_threshold,
+            cov, mu, bf_threshold=bf_threshold,
             bisect_method=bisect_method,
         )
 
         if kf_tp and prev_w["w"] is not None and kf_cache["mu_prev"] is not None:
-            w = _kf_smooth_weights(w, prev_w["w"], cov, mu, kf_cache["mu_prev"])
+            if bisect_method == "vol":
+                w = _kf_smooth_weights(w, prev_w["w"], cov)
+            else:
+                w = _kf_smooth_weights(w, prev_w["w"], cov, mu, kf_cache["mu_prev"])
 
         prev_w["w"] = w.copy()
         if kf_tp:
@@ -756,11 +738,11 @@ def backtest(returns: pd.DataFrame,
 
 def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> StrategyMap:
     strategies: StrategyMap = {
-        "HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe"),
-        "HMVA-mv":  vol_bl_strategy(cov_nonlinear_shrink, bisect_method="vol"),
-        "HRP":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
-        "MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False),
-        "GMV":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
+        "HMVA":     vol_bl_strategy(cov_ewa_nls, bisect_method="sharpe", kf_tp=True),
+        "HMVA-mv":  vol_bl_strategy(cov_ewa_nls, bisect_method="vol", kf_tp=True),
+        "MVO":      max_utility_strategy(cov_ewa_nls, gamma=2.5, kf_tp=True),
+        "GMV":      min_var_strategy(cov_ewa_nls, kf_tp=True),
+        "HRP":      hrp_strategy(cov_ewa_nls, linkage_method="ward", kf_tp=True),
         "EW":       (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
@@ -1050,7 +1032,7 @@ def diebold_mariano(d1: pd.Series, d2: pd.Series,
 
 
 def lw_sharpe_test(r1: pd.Series, r2: pd.Series,
-                   n_boot: int = 2000, block: int = 21,
+                   n_boot: int = 10_000, block: int = 21,
                    seed: int = 42) -> Tuple[float, float]:
     """
     Block-bootstrap test in the spirit of Ledoit & Wolf (2008) for
@@ -1204,7 +1186,6 @@ def plot_backtest_results(daily: pd.DataFrame,
         sharpe_bars.png      Sharpe bar chart
         maxdd_bars.png       Max-drawdown bar chart
         turnover_bars.png    Turnover bar chart
-        metrics_table.png    colour-coded full metrics table
     """
     _ensure_dir(outdir)
     suf = f" {title_suffix}".rstrip() if title_suffix else ""
@@ -1223,14 +1204,15 @@ def plot_backtest_results(daily: pd.DataFrame,
         save_path=f"{outdir}/equity_curves.png")
     plt.close("all")
 
+    _plt.plot_cumulative_returns(
+        daily, title=f"Equity Curves (log scale){suf}",
+        save_path=f"{outdir}/equity_curves_log.png",
+        log_scale=True)
+    plt.close("all")
+
     _plt.plot_drawdown(
         daily, title=f"Drawdowns{suf}",
         save_path=f"{outdir}/drawdowns.png")
-    plt.close("all")
-
-    _plt.plot_annual_returns(
-        daily, title=f"Annual Returns{suf}",
-        save_path=f"{outdir}/annual_returns.png")
     plt.close("all")
 
     _plt.plot_risk_return_scatter(
@@ -1240,7 +1222,8 @@ def plot_backtest_results(daily: pd.DataFrame,
 
     _plt.plot_return_distribution(
         monthly, title=f"Monthly Return Distributions{suf}",
-        save_path=f"{outdir}/return_dist.png")
+        save_path=f"{outdir}/return_dist.png",
+        subplot_order=["HMVA", "HMVA-mv", "EW", "SPY-K"])
     plt.close("all")
 
     _plt.plot_correlation_heatmap(
@@ -1274,29 +1257,6 @@ def plot_backtest_results(daily: pd.DataFrame,
             plt.savefig(f"{outdir}/{fname}.png", dpi=150)
             plt.close()
 
-    # Comprehensive colour-coded metrics table via plotting.py
-    _rename = {
-        "AnnReturn":  "Ann. Return (%)",
-        "AnnVol":     "Ann. Volatility (%)",
-        "Sharpe":     "Sharpe Ratio",
-        "Sortino":    "Sortino Ratio",
-        "Omega":      "Omega Ratio",
-        "MaxDD":      "Max Drawdown (%)",
-        "Calmar":     "Calmar Ratio",
-        "VaR95":      "VaR 95% (%)",
-        "CVaR95":     "CVaR 95% (%)",
-        "HitRate":    "Hit Rate (%)",
-        "Skew":       "Skewness",
-        "Kurt":       "Excess Kurtosis",
-        "Turnover":   "Turnover",
-        "SharpeStab": "Sharpe Stability",
-    }
-    tbl = metrics.rename(
-        columns={k: v for k, v in _rename.items() if k in metrics.columns})
-    _plt.plot_metrics_table(
-        tbl, title=f"Performance Metrics{suf}",
-        save_path=f"{outdir}/metrics_table.png")
-    plt.close("all")
 
 
 def plot_holdings_concentration(
@@ -1320,7 +1280,10 @@ def plot_holdings_concentration(
     """
     _ensure_dir(outdir)
     suf = f" {title_suffix}".rstrip() if title_suffix else ""
-    sns.set_style("whitegrid")
+    palette = _plt._PALETTE if _plt is not None else [
+        "#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0",
+        "#00BCD4", "#795548", "#607D8B", "#E91E63",
+    ]
 
     # Normalise: backtest_pit returns Dict[str, Dict[date, Series]]; convert to DataFrame
     def _to_df(w) -> pd.DataFrame:
@@ -1334,9 +1297,10 @@ def plot_holdings_concentration(
 
     # ── 1. Effective N (all strategies on one plot) ──────────────────────────
     fig, ax = plt.subplots(figsize=(11, 4))
-    for name, W in weights_log.items():
+    for i, (name, W) in enumerate(weights_log.items()):
         eff_n = 1.0 / (W ** 2).sum(axis=1)
-        ax.plot(W.index, eff_n, label=name, lw=1.5)
+        ax.plot(W.index, eff_n, label=name, lw=1.5,
+                color=palette[i % len(palette)])
     ax.set_title(f"Effective N (1 / HHI){suf}")
     ax.set_ylabel("Effective N")
     ax.legend(loc="best", fontsize=8)
@@ -1344,17 +1308,18 @@ def plot_holdings_concentration(
     plt.savefig(f"{outdir}/holdings_effective_n.png", dpi=150)
     plt.close()
 
-    for name, W in weights_log.items():
+    for i, (name, W) in enumerate(weights_log.items()):
         safe = name.replace(" ", "_").replace("/", "-")
         n_assets = W.shape[1]
 
         # ── 2. Top-k cumulative weight ───────────────────────────────────────
         fig, ax = plt.subplots(figsize=(11, 4))
-        for k in top_ks:
+        for j, k in enumerate(top_ks):
             if k > n_assets:
                 continue
             top_k_w = W.apply(lambda row: row.nlargest(k).sum(), axis=1)
-            ax.plot(W.index, top_k_w * 100, label=f"Top {k}", lw=1.4)
+            ax.plot(W.index, top_k_w * 100, label=f"Top {k}", lw=1.4,
+                    color=palette[j % len(palette)])
         ax.yaxis.set_major_formatter(mtick.PercentFormatter())
         ax.set_title(f"Top-k Concentration — {name}{suf}")
         ax.set_ylabel("Cumulative weight (%)")
