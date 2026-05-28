@@ -133,8 +133,7 @@ def plot_results(df: pd.DataFrame, outdir: Path) -> None:
     ax.axhline(1.0, color="black", lw=0.9, ls="--", label="Optimal  (ratio = 1)")
     ax.set_xlabel("Cluster size  n", fontsize=11)
     ax.set_ylabel("Score(heuristic) / Score(brute-force)", fontsize=10)
-    ax.set_title("Heuristic approximation quality\n"
-                 "objective: Cov(EW_A,EW_B) + rho(EW_A,EW_B)", fontsize=11)
+    ax.set_title("Heuristic approximation quality", fontsize=11)
     ax.set_xticks(n_vals)
     ax.legend(fontsize=9)
     plt.tight_layout()
@@ -147,7 +146,7 @@ def plot_results(df: pd.DataFrame, outdir: Path) -> None:
             color="steelblue", lw=1.6, ms=6)
     ax.set_xlabel("Cluster size  n", fontsize=11)
     ax.set_ylabel("Exact match rate  (%)", fontsize=11)
-    ax.set_title("Fraction of trials where heuristic = global optimum", fontsize=11)
+    ax.set_title("Fraction of trials where heuristic = brute-force optimum", fontsize=11)
     ax.set_ylim(0, 105)
     ax.set_xticks(n_vals)
     plt.tight_layout()
@@ -184,7 +183,7 @@ def main() -> None:
     OUTDIR        = Path(__file__).resolve().parent.parent / "results" / "split_comparison"
 
     print("=== HMVA heuristic vs. brute-force split comparison ===")
-    print("  objective      : Cov(EW_A,EW_B) + Corr(EW_A,EW_B)")
+    print("   objective      : Cov(EW_A,EW_B) + Corr(EW_A,EW_B)")
     print(f"  cluster sizes  : {CLUSTER_SIZES}")
     print(f"  reps per size  : {N_REPS}")
     print()
