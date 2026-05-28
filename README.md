@@ -386,7 +386,7 @@ analysis/
 thesis/
 ├── pilot.tex                # LaTeX thesis source
 └── references.bib           # bibliography
-data/                        # CRSP files (not committed — see Data section)
+data/                        # CRSP files
 results/
 ├── backtest/                # metrics.csv, statistical_tests.csv, equity/DD plots
 ├── cost_robustness/         # robustness_long.csv, robustness_summary.csv, heatmaps

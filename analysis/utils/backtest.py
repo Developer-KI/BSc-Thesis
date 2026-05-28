@@ -1262,7 +1262,6 @@ def plot_backtest_results(daily: pd.DataFrame,
 def plot_holdings_concentration(
     weights_log: Dict[str, pd.DataFrame],
     outdir: str,
-    top_ks: Tuple[int, ...] = (1, 3, 5, 10),
     title_suffix: str = "",
 ) -> None:
     """
@@ -1273,10 +1272,6 @@ def plot_holdings_concentration(
     holdings_effective_n.png
         Effective number of assets (1 / HHI = 1 / Σwᵢ²) for all strategies
         on one axes — higher is more diversified.
-
-    holdings_topk_<name>.png
-        Cumulative weight of the top-k assets at each rebalance for a single
-        strategy, one line per k value in `top_ks`.
     """
     _ensure_dir(outdir)
     suf = f" {title_suffix}".rstrip() if title_suffix else ""
@@ -1295,7 +1290,6 @@ def plot_holdings_concentration(
 
     weights_log = {name: _to_df(w) for name, w in weights_log.items()}
 
-    # ── 1. Effective N (all strategies on one plot) ──────────────────────────
     fig, ax = plt.subplots(figsize=(11, 4))
     for i, (name, W) in enumerate(weights_log.items()):
         eff_n = 1.0 / (W ** 2).sum(axis=1)
@@ -1307,24 +1301,4 @@ def plot_holdings_concentration(
     plt.tight_layout()
     plt.savefig(f"{outdir}/holdings_effective_n.png", dpi=150)
     plt.close()
-
-    for i, (name, W) in enumerate(weights_log.items()):
-        safe = name.replace(" ", "_").replace("/", "-")
-        n_assets = W.shape[1]
-
-        # ── 2. Top-k cumulative weight ───────────────────────────────────────
-        fig, ax = plt.subplots(figsize=(11, 4))
-        for j, k in enumerate(top_ks):
-            if k > n_assets:
-                continue
-            top_k_w = W.apply(lambda row: row.nlargest(k).sum(), axis=1)
-            ax.plot(W.index, top_k_w * 100, label=f"Top {k}", lw=1.4,
-                    color=palette[j % len(palette)])
-        ax.yaxis.set_major_formatter(mtick.PercentFormatter())
-        ax.set_title(f"Top-k Concentration — {name}{suf}")
-        ax.set_ylabel("Cumulative weight (%)")
-        ax.legend(loc="best", fontsize=8)
-        plt.tight_layout()
-        plt.savefig(f"{outdir}/holdings_topk_{safe}.png", dpi=150)
-        plt.close()
 

@@ -196,7 +196,7 @@ def plot_annual_returns(daily: pd.DataFrame, outdir: str) -> None:
     ax.set_xticklabels(annual.index.year, rotation=45, ha="right")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
     ax.set_ylabel("Annual return")
-    ax.set_title("Annual returns by strategy  (CRSP 2002–2024)")
+    ax.set_title("Annual returns by strategy")
     ax.legend(ncol=len(cols), fontsize=9)
     fig.tight_layout()
     fig.savefig(f"{outdir}/annual_returns.png", bbox_inches="tight")

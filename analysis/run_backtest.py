@@ -128,11 +128,9 @@ def main(argv: List[str] = None) -> None:
     print(test_df.round(4).to_string(index=False))
     test_df.to_csv(f"{outdir}/statistical_tests.csv", index=False)
 
-    L.plot_backtest_results(daily, weights, metrics, outdir,
-                            title_suffix=f"(CRSP lookback={args.lookback})")
+    L.plot_backtest_results(daily, weights, metrics, outdir)
 
-    L.plot_holdings_concentration(weights, outdir,
-                                  title_suffix=f"(CRSP lookback={args.lookback})")
+    L.plot_holdings_concentration(weights, outdir)
 
     print(f"\n[done] results at {outdir}/")
 

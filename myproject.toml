@@ -22,9 +22,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-Map the root import path to the 'src' directory
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
-Tell it to find all sub-packages (folders with __init__.py) inside 'src'
 where = ["src"]
