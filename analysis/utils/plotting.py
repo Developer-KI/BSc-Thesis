@@ -1,5 +1,3 @@
-# Plotting tools for BSc Thesis – portfolio strategy analysis
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -23,6 +21,22 @@ _PALETTE = [
     "#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0",
     "#00BCD4", "#795548", "#607D8B", "#E91E63",
 ]
+
+STRATEGY_COLORS = {
+    "HMVA":    "#2196F3",
+    "HMVA-mv": "#F44336",
+    "MVO":     "#4CAF50",
+    "GMV":     "#FF9800",
+    "HRP":     "#9C27B0",
+    "EW":      "#00BCD4",
+    "SPY-K":   "#795548",
+}
+
+
+def _strategy_colors(names) -> list:
+    """Return a color per strategy name, falling back to _PALETTE by index."""
+    return [STRATEGY_COLORS.get(n, _PALETTE[i % len(_PALETTE)])
+            for i, n in enumerate(names)]
 
 
 def _save(fig: plt.Figure, save_path: Optional[str]) -> plt.Figure:
@@ -178,8 +192,8 @@ def plot_sharpe_bar(
     sharpe_series : Series indexed by strategy name
     """
     fig, ax = plt.subplots(figsize=(10, 5))
-    colors = [_PALETTE[0] if v >= 0 else _PALETTE[1] for v in sharpe_series]
-    sharpe_series.plot(kind="bar", ax=ax, color=colors, edgecolor="white")
+    colors = _strategy_colors(sharpe_series.index)
+    sharpe_series.plot(kind="bar", ax=ax, color=colors, edgecolor="black")
     ax.set_title(title)
     ax.set_ylabel("Sharpe Ratio")
     ax.set_xticklabels(sharpe_series.index, rotation=30, ha="right")
@@ -212,7 +226,7 @@ def plot_performance_summary(
     for idx, metric in enumerate(metrics):
         ax = axes[idx]
         vals = stats_df[metric]
-        bar_colors = [_PALETTE[0] if v >= 0 else _PALETTE[1] for v in vals]
+        bar_colors = _strategy_colors(vals.index)
         vals.plot(kind="bar", ax=ax, color=bar_colors, edgecolor="white")
         ax.set_title(metric)
         ax.set_xticklabels(vals.index, rotation=30, ha="right")
@@ -542,9 +556,9 @@ def plot_annual_returns(
     for i, col in enumerate(annual.columns):
         offsets = x + i * bar_width - 0.4 + bar_width / 2
         vals = annual[col].values
-        colors = [_PALETTE[i % len(_PALETTE)] if v >= 0 else _PALETTE[1] for v in vals]
+        color = STRATEGY_COLORS.get(col, _PALETTE[i % len(_PALETTE)])
         ax.bar(offsets, vals, width=bar_width * 0.92,
-               color=colors, label=col, alpha=0.85, edgecolor="white")
+               color=color, label=col, alpha=0.85, edgecolor="white")
 
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_title(title)
@@ -558,7 +572,7 @@ def plot_annual_returns(
 
 def plot_risk_return_scatter(
     returns_df: pd.DataFrame,
-    risk_free_rate: float = 0.04,
+    risk_free_rate: float = 0.00,
     title: str = "Risk-Return Profile",
     save_path: Optional[str] = None,
 ) -> plt.Figure:

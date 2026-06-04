@@ -17,6 +17,8 @@ DATA_CSV = "./data/stock_daily_returns.csv"
 CONSTITUENTS_CSV = "./data/constiuents.csv"
 PERMNO_LIST_TXT = "./data/unique_ids.txt"
 
+SUBFOLDER_OUTPUT = "base"
+
 PERMNO_COL = "PERMNO"
 DATE_COL = "DlyCalDt"
 PRICE_COL = "DlyClose"
@@ -31,6 +33,7 @@ REBALANCE = 21
 
 RISK_FREE_BPS = 0.00
 COST_BPS = 0.00
+
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -55,7 +58,7 @@ def main(argv: List[str] = None) -> None:
     p.add_argument("--lookback", type=int, default=LOOKBACK)
     p.add_argument("--rebalance", type=int, default=REBALANCE)
     p.add_argument("--cost-bps", type=float, default=COST_BPS)
-    p.add_argument("--out", default="results/backtest")
+    p.add_argument("--out", default=f"results/backtest/{SUBFOLDER_OUTPUT}")
     args = p.parse_args(argv)
 
     np.random.seed(42)
@@ -105,28 +108,43 @@ def main(argv: List[str] = None) -> None:
     print(metrics.round(4).to_string())
     metrics.to_csv(f"{outdir}/metrics.csv")
 
-    print("\n=== Tests HMVA vs others ===")
-    base = daily["HMVA"]
+    print("\n=== Tests HMVA vs others (excl. HMVA-mv) ===")
+    base_hmva = daily["HMVA"]
     rows = []
     for s in daily.columns:
-        if s == "HMVA":
+        if s in ("HMVA", "HMVA-mv"):
             continue
-        lw_diff, lw_p = L.lw_sharpe_test(base, daily[s], n_boot=2000, block=21)
-        dm_stat, dm_p  = L.diebold_mariano(base, daily[s], h=21)
+        lw_diff, lw_p = L.lw_sharpe_test(base_hmva, daily[s], n_boot=2000, block=21)
+        dm_stat, dm_p  = L.diebold_mariano(base_hmva, daily[s], h=21)
         rows.append({
-            "Strategy":   s,
+            "Strategy":    s,
             "Sharpe_diff": lw_diff,
             "LW_p":        lw_p,
             "DM_stat":     dm_stat,
             "DM_p":        dm_p,
         })
     test_df = pd.DataFrame(rows)
-    test_df["LW_p_holm"] = L.adjust_pvalues(test_df["LW_p"].values, "holm")
-    test_df["LW_p_bh"]   = L.adjust_pvalues(test_df["LW_p"].values, "bh")
-    test_df["DM_p_holm"] = L.adjust_pvalues(test_df["DM_p"].values, "holm")
-    test_df["DM_p_bh"]   = L.adjust_pvalues(test_df["DM_p"].values, "bh")
     print(test_df.round(4).to_string(index=False))
-    test_df.to_csv(f"{outdir}/statistical_tests.csv", index=False)
+    test_df.to_csv(f"{outdir}/statistical_tests_hmva.csv", index=False)
+
+    print("\n=== Tests HMVA-mv vs others (excl. HMVA) ===")
+    base_mv = daily["HMVA-mv"]
+    rows = []
+    for s in daily.columns:
+        if s in ("HMVA-mv", "HMVA"):
+            continue
+        lw_diff, lw_p = L.lw_sharpe_test(base_mv, daily[s], n_boot=2000, block=21)
+        dm_stat, dm_p  = L.diebold_mariano(base_mv, daily[s], h=21)
+        rows.append({
+            "Strategy":    s,
+            "Sharpe_diff": lw_diff,
+            "LW_p":        lw_p,
+            "DM_stat":     dm_stat,
+            "DM_p":        dm_p,
+        })
+    test_mv_df = pd.DataFrame(rows)
+    print(test_mv_df.round(4).to_string(index=False))
+    test_mv_df.to_csv(f"{outdir}/statistical_tests_hmva_mv.csv", index=False)
 
     L.plot_backtest_results(daily, weights, metrics, outdir)
 

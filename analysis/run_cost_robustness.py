@@ -35,7 +35,7 @@ END_DATE = "2025-01-01"
 # Default grid
 DEFAULT_LOOKBACKS = "126, 252, 504"
 DEFAULT_HISTORY = 504
-DEFAULT_COSTS = "0, 2, 5, 10, 20, 30"
+DEFAULT_COSTS = "0, 2, 5, 10, 20"
 DEFAULT_REBALANCE = 21
 DEFAULT_TOP_K = 100
 
@@ -207,12 +207,12 @@ def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
         for sr_col, so_col, bench_label, bench_tag in benchmarks:
             _heatmap(sub, sr_col,
                      label=f"ΔSharpe vs {bench_label}",
-                     title=f"{strat}: ΔSharpe vs {bench_label}",
+                     title=f"{strat}",
                      save_path=f"{outdir}/heatmap_vs_{bench_tag}_sharpe_{safe}.png")
 
             _heatmap(sub, so_col,
                      label=f"ΔSortino vs {bench_label}",
-                     title=f"{strat}: ΔSortino vs {bench_label}",
+                     title=f"{strat}",
                      save_path=f"{outdir}/heatmap_vs_{bench_tag}_sortino_{safe}.png")
 
     print(f"[heatmaps] saved to {outdir}/")

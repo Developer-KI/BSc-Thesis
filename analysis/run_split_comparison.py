@@ -1,21 +1,3 @@
-"""
-run_split_comparison.py
-=======================
-Simulation comparing the O(n^2) heuristic bipartition used in HMVA's
-tree against the exhaustive combinatorial (brute-force) optimum.
-
-Both methods minimise the fixed equal-weight blend:
-    0.5 * Cov(EW_A, EW_B) + 0.5 * rho(EW_A, EW_B)
-
-For each cluster size n, draws 300 random factor-model covariance matrices
-and compares heuristic vs brute-force on:
-
-  * approximation ratio  = score(heuristic) / score(brute-force)
-  * exact match rate     = fraction of trials where both return the same partition
-
-Run from the analysis/ directory:
-    python run_split_comparison.py
-"""
 from __future__ import annotations
 
 from pathlib import Path

@@ -9,7 +9,6 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mtick
 import seaborn as sns
 import utils.plotting as _plt
 
@@ -99,7 +98,7 @@ def mu_BL_trend(
         return pi_mu
 
 # =============================================================================
-# Weight Smoother
+# Allocation Filter
 # =============================================================================
   
 def _kf_smooth_weights(
@@ -284,6 +283,7 @@ def max_utility_strategy(
     cov_fn: Callable,
     gamma: float = 2.5,
     kf_tp: bool = True,
+    ewma_halflife: Optional[float] = 21,
 ) -> Tuple[Callable, Callable]:
     """
     Factory: (cov_fn, alloc_fn) pair for the long-only mean-variance utility
@@ -294,12 +294,15 @@ def max_utility_strategy(
     cov_fn : base covariance estimator.
     gamma  : risk-aversion coefficient.
     kf_tp  : if True, smooth weights each period with _kf_smooth_weights.
+    ewma_halflife : EWMA pseudo-returns halflife in trading days; None = uniform window.
     """
     cache: Dict = {}
     prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
     kf_cache: Dict[str, Optional[np.ndarray]] = {"mu_prev": None}
 
     def _cov_fn(window: np.ndarray) -> np.ndarray:
+        if ewma_halflife is not None:
+            window = _ewma_pseudo(window, halflife=ewma_halflife)
         cov = cov_fn(window)
         cache["window"] = window
         return cov
@@ -597,6 +600,7 @@ def vol_bl_strategy(
     cov_fn: Callable,
     bf_threshold: int = 10,
     bisect_method: str = "sharpe",
+    ewma_halflife: float = 21,
     kf_tp: bool = True,
 ) -> Tuple[Callable, Callable]:
     """
@@ -618,6 +622,7 @@ def vol_bl_strategy(
     kf_cache: Dict[str, Optional[np.ndarray]] = {"mu_prev": None}
 
     def _cov_fn(window: np.ndarray) -> np.ndarray:
+        window = _ewma_pseudo(window, halflife=ewma_halflife)
         cov = cov_fn(window)
         cache["window"] = window
         return cov
@@ -736,13 +741,23 @@ def backtest(returns: pd.DataFrame,
 # Point-in-time backtest with time-varying universe (CRSP S&P 500)
 # ---------------------------------------------------------------------------
 
+# Commented lines are for full runs to compare ablation of exp weights and filtering
 def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> StrategyMap:
     strategies: StrategyMap = {
-        "HMVA":     vol_bl_strategy(cov_ewa_nls, bisect_method="sharpe", kf_tp=True),
-        "HMVA-mv":  vol_bl_strategy(cov_ewa_nls, bisect_method="vol", kf_tp=True),
-        "MVO":      max_utility_strategy(cov_ewa_nls, gamma=2.5, kf_tp=True),
+        "HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe", kf_tp=True, ewma_halflife=21),
+        "HMVA-mv":  vol_bl_strategy(cov_nonlinear_shrink, bisect_method="vol", kf_tp=True, ewma_halflife=21),
+        # Best MVO is EXP weights, KF
+        "MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
+        # "MVO-K":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
+        # "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
+        # Best GMV is EXP weights, KF
         "GMV":      min_var_strategy(cov_ewa_nls, kf_tp=True),
-        "HRP":      hrp_strategy(cov_ewa_nls, linkage_method="ward", kf_tp=True),
+        # "GMV-K":      min_var_strategy(cov_ewa_nls, kf_tp=False),
+        # "GMV-EK":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
+        # Best HRP is EXP weights, no KF
+        "HRP":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
+        # "HRP-K":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
+        # "HRP-EK":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
         "EW":       (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
@@ -762,24 +777,6 @@ def backtest_pit(returns_wide: pd.DataFrame,
                  ) -> Tuple[pd.DataFrame, Dict[str, Dict[pd.Timestamp, pd.Series]]]:
     """
     Point-in-time backtest with time-varying universe.
-
-    At each rebalance date t:
-      1.  Take the universe U_t = universe_fn(t).
-      2.  Filter to PERMNOs that are in U_t AND have non-NaN data for
-          every day in [t-lookback, t-1].  Call this filtered set N_t.
-      3.  Estimate covariance on returns[t-lookback : t, N_t].
-      4.  Compute target weights w_t for each strategy.
-      5.  Hold for `rebalance` days; on each holding day:
-            - Look up returns for the held PERMNOs.  When the daily
-              return field already includes the CRSP delisting return
-              (DlyRet / DLRET), the proper delisting return appears on
-              the last trading day of the stock and the cell is NaN
-              from the day after delisting onwards.  We treat any
-              residual NaN as 0 (the position has been liquidated and
-              the proceeds sit in cash earning rf=0 until the next
-              rebalance).
-            - Drift weights by realised single-asset returns.
-      6.  Pay transaction cost  κ × sum |w_t - w_drifted|  on day t.
 
     Returns
     -------
@@ -1063,40 +1060,6 @@ def lw_sharpe_test(r1: pd.Series, r2: pd.Series,
     p = float(np.mean(np.abs(centred) >= np.abs(obs)))
     return obs, p
 
-
-def adjust_pvalues(pvals: np.ndarray, method: str = "holm") -> np.ndarray:
-    """
-    Holm-Bonferroni (step-down) or Benjamini-Hochberg FDR adjustment.
-
-    Use Holm if you want strong family-wise error rate control;
-    use BH if you want FDR control (less conservative, more power).
-    """
-    pvals = np.asarray(pvals, dtype=float)
-    m = len(pvals)
-    if method == "holm":
-        order = np.argsort(pvals)
-        adjusted_sorted = np.empty(m)
-        running = 0.0
-        for rank, i in enumerate(order):
-            adjusted_sorted[rank] = max(running, min(pvals[i] * (m - rank), 1.0))
-            running = adjusted_sorted[rank]
-        out = np.empty(m)
-        out[order] = adjusted_sorted
-        return out
-    elif method == "bh":
-        order = np.argsort(pvals)
-        sorted_p = pvals[order]
-        scaled = sorted_p * m / (np.arange(m) + 1)
-        # enforce monotonicity from the right
-        for k in range(m - 2, -1, -1):
-            scaled[k] = min(scaled[k], scaled[k + 1])
-        out = np.empty(m)
-        out[order] = np.minimum(scaled, 1.0)
-        return out
-    else:
-        raise ValueError(f"unknown method {method!r}")
-
-
 # =============================================================================
 # Plotting
 # =============================================================================
@@ -1135,11 +1098,14 @@ def plot_metric_bars(metrics: pd.DataFrame, outdir: str,
                      title_suffix: str = "") -> None:
     _ensure_dir(outdir)
 
-    for col, colour in [("Sharpe", "steelblue"),
-                        ("Turnover", "darkorange"),
-                        ("MaxDD", "indianred")]:
+    for col in ["Sharpe", "Turnover", "MaxDD"]:
+        if col not in metrics.columns:
+            continue
+        colors = (_plt._strategy_colors(metrics.index)
+                  if _plt is not None
+                  else "steelblue")
         fig, ax = plt.subplots(figsize=(8, 4))
-        metrics[col].plot.bar(ax=ax, color=colour, edgecolor="black")
+        metrics[col].plot.bar(ax=ax, color=colors, edgecolor="black")
         ax.set_title(f"{col} by strategy {title_suffix}".strip())
         ax.set_ylabel(col)
         plt.xticks(rotation=20, ha="right")
@@ -1245,11 +1211,11 @@ def plot_backtest_results(daily: pd.DataFrame,
             save_path=f"{outdir}/sharpe_bars.png")
         plt.close("all")
 
-    for col, fname, colour in [("MaxDD",    "maxdd_bars",    "indianred"),
-                                ("Turnover", "turnover_bars", "darkorange")]:
+    for col, fname in [("MaxDD", "maxdd_bars"), ("Turnover", "turnover_bars")]:
         if col in metrics.columns:
+            colors = _plt._strategy_colors(metrics.index)
             fig, ax = plt.subplots(figsize=(8, 4))
-            metrics[col].plot.bar(ax=ax, color=colour, edgecolor="black")
+            metrics[col].plot.bar(ax=ax, color=colors, edgecolor="black")
             ax.set_title(f"{col} by strategy{suf}".strip())
             ax.set_ylabel(col)
             plt.xticks(rotation=20, ha="right")
@@ -1295,7 +1261,7 @@ def plot_holdings_concentration(
         eff_n = 1.0 / (W ** 2).sum(axis=1)
         ax.plot(W.index, eff_n, label=name, lw=1.5,
                 color=palette[i % len(palette)])
-    ax.set_title(f"Effective N (1 / HHI){suf}")
+    ax.set_title(f"Effective Holdings {suf}")
     ax.set_ylabel("Effective N")
     ax.legend(loc="best", fontsize=8)
     plt.tight_layout()

@@ -1,31 +1,7 @@
-"""
-run_crisis.py  –  Crisis-period analysis of HMVA backtest results.
-
-Loads daily portfolio returns from results/backtest/daily_excess_returns.csv
-and analyses risk-adjusted performance across defined market regimes.
-
-Crisis periods analysed:
-  2002-01-01 → 2002-10-31    Dot-com trough
-  2007-10-01 → 2009-03-31    Global Financial Crisis (GFC)
-  2020-01-15 → 2020-04-30    COVID-19 crash
-  2022-01-01 → 2022-12-31    Rate-hike cycle
-
-Calm periods (for contrast):
-  2003-01-01 → 2007-09-30    Pre-GFC bull market
-  2009-04-01 → 2020-01-14    Post-GFC bull market
-  2020-05-01 → 2021-12-31    Post-COVID rebound
-
-Outputs in results/crisis/:
-  period_metrics.csv           per-period, per-strategy metrics
-  crisis_equity.png            equity curves for each crisis window (2×2 grid)
-  period_sharpe_heatmap.png    heatmap: Sharpe by period × strategy
-  regime_summary.csv           crisis vs calm aggregated Sharpe comparison
-"""
-
 from __future__ import annotations
 import argparse
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -43,6 +19,7 @@ _PALETTE = _plt._PALETTE
 # ── configuration ─────────────────────────────────────────────────────────────
 
 RESULTS_DIR = "results"
+SUBFOLDER = "base"
 
 STRATEGIES = ["HMVA", "HMVA-mv", "HRP", "MVO", "GMV", "EW", "SPY-K"]
 
@@ -92,7 +69,7 @@ def _compute_period_metrics(daily: pd.DataFrame,
 
 
 def _load_daily(results_dir: str) -> pd.DataFrame:
-    path = f"{results_dir}/backtest/daily_excess_returns.csv"
+    path = f"{results_dir}/backtest/{SUBFOLDER}/daily_excess_returns.csv"
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"Results file not found: {path}\n"
@@ -208,7 +185,7 @@ def plot_annual_returns(daily: pd.DataFrame, outdir: str) -> None:
 def main(argv=None):
     p = argparse.ArgumentParser(description="HMVA crisis-period analysis")
     p.add_argument("--results-dir", default=RESULTS_DIR)
-    p.add_argument("--out",         default="results/crisis_analysis")
+    p.add_argument("--out",         default=f"results/crisis_analysis")
     args = p.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
