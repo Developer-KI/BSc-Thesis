@@ -21,7 +21,7 @@ _PALETTE = _plt._PALETTE
 RESULTS_DIR = "results"
 SUBFOLDER = "base"
 
-STRATEGIES = ["HMVA", "HMVA-mv", "HRP", "MVO", "GMV", "EW", "SPY-K"]
+STRATEGIES = ["HMVA", "HMVA-mv", "HRP-E", "MVO-EK", "GMV-EK", "EW", "SPY-100"]
 
 CRISIS_PERIODS: Dict[str, Tuple[str, str]] = {
     "Dot-com trough\n(2002)":       ("2002-01-01", "2002-10-31"),
@@ -37,6 +37,8 @@ CALM_PERIODS: Dict[str, Tuple[str, str]] = {
 }
 
 _CRISIS_SHADE = "#fce4e4"
+
+_ROLLING_WINDOW = 252
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -84,6 +86,75 @@ def _load_daily(results_dir: str) -> pd.DataFrame:
 
 
 # ── plots ─────────────────────────────────────────────────────────────────────
+
+def _rolling_sharpe(daily: pd.DataFrame, window: int = _ROLLING_WINDOW) -> pd.DataFrame:
+    roll_ret = daily.rolling(window).mean() * 252
+    roll_vol = daily.rolling(window).std() * np.sqrt(252)
+    return roll_ret / roll_vol.replace(0, np.nan)
+
+
+_FOCUS = {"HMVA", "HMVA-mv"}
+
+
+def _draw_rolling_sharpe_lines(ax, rs: pd.DataFrame, daily_cols) -> None:
+    """Plot all strategies: non-focus muted, HMVA / HMVA-mv on top."""
+    others = [c for c in rs.columns if c not in _FOCUS]
+    for col in others:
+        ax.plot(rs.index, rs[col], color=_col_color(col, daily_cols),
+                lw=1.0, alpha=0.45, label=col)
+    for col in [c for c in rs.columns if c in _FOCUS]:
+        ax.plot(rs.index, rs[col], color=_col_color(col, daily_cols),
+                lw=2.4, alpha=1.0, label=col, zorder=5)
+
+
+def _style_sharpe_ax(ax) -> None:
+    """Common axis styling for rolling-Sharpe plots."""
+    ax.axhline(0, color="black", lw=0.8, ls="-", zorder=4)
+    ax.axhline(1, color="grey",  lw=0.7, ls="--", alpha=0.6, zorder=3)
+    ax.axhline(-1, color="grey", lw=0.7, ls="--", alpha=0.6, zorder=3)
+    ax.yaxis.grid(True, ls=":", lw=0.5, alpha=0.5)
+    ax.set_axisbelow(True)
+    ax.set_ylabel(f"Rolling Sharpe")
+
+
+def plot_rolling_sharpe_full(daily: pd.DataFrame, outdir: str) -> None:
+    rs = _rolling_sharpe(daily)
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    first_valid = rs.dropna(how="all").index[0]
+    for label, (s, e) in CRISIS_PERIODS.items():
+        if pd.Timestamp(s) < first_valid:
+            continue
+        ax.axvspan(pd.Timestamp(s), pd.Timestamp(e), color=_CRISIS_SHADE, alpha=0.55, zorder=0)
+
+    _draw_rolling_sharpe_lines(ax, rs, daily.columns)
+    _style_sharpe_ax(ax)
+
+    # re-annotate now that y limits are set (crisis labels at bottom of plot)
+    ax.set_title(f"Rolling {_ROLLING_WINDOW}-day Sharpe ratio",
+                 fontsize=12)
+    locator = mdates.AutoDateLocator(minticks=6, maxticks=12)
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    ax.tick_params(axis="x", rotation=30)
+    ax.legend(fontsize=8, ncol=len(rs.columns), loc="upper left",
+              framealpha=0.85, edgecolor="lightgrey")
+
+    # crisis period labels pinned to bottom of each shaded span
+    ax.set_ylim(ax.get_ylim())  # freeze limits before re-annotating
+    ybot = ax.get_ylim()[0]
+    for label, (s, e) in CRISIS_PERIODS.items():
+        if pd.Timestamp(s) < first_valid:
+            continue
+        ts, te = pd.Timestamp(s), pd.Timestamp(e)
+        mid = ts + (te - ts) / 2
+        ax.text(mid, ybot, label.replace("\n", "\n"),
+                ha="center", va="bottom", fontsize=7.5, color="#8b0000",
+                bbox=dict(fc="white", alpha=0.6, ec="none", pad=1))
+
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/rolling_sharpe_full.png", bbox_inches="tight", dpi=150)
+    plt.close(fig)
 
 
 def plot_crisis_equity(daily: pd.DataFrame, outdir: str) -> None:
@@ -245,6 +316,7 @@ def main(argv=None):
     # ── generate plots ────────────────────────────────────────────────────────
     print("\n[crisis] generating plots ...")
     plot_crisis_equity(daily, args.out)
+    plot_rolling_sharpe_full(daily, args.out)
     plot_period_sharpe_heatmap(period_metrics, args.out)
     plot_annual_returns(daily, args.out)
 

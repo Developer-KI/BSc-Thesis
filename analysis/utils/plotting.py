@@ -25,11 +25,11 @@ _PALETTE = [
 STRATEGY_COLORS = {
     "HMVA":    "#2196F3",
     "HMVA-mv": "#F44336",
-    "MVO":     "#4CAF50",
-    "GMV":     "#FF9800",
-    "HRP":     "#9C27B0",
+    "MVO-EK":     "#4CAF50",
+    "GMV-EK":     "#FF9800",
+    "HRP-E":     "#9C27B0",
     "EW":      "#00BCD4",
-    "SPY-K":   "#795548",
+    "SPY-100":   "#795548",
 }
 
 

@@ -747,21 +747,21 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> Stra
         "HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe", kf_tp=True, ewma_halflife=21),
         "HMVA-mv":  vol_bl_strategy(cov_nonlinear_shrink, bisect_method="vol", kf_tp=True, ewma_halflife=21),
         # Best MVO is EXP weights, KF
-        "MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
-        # "MVO-K":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
+        "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
+        # "MVO-E":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
         # "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
         # Best GMV is EXP weights, KF
-        "GMV":      min_var_strategy(cov_ewa_nls, kf_tp=True),
-        # "GMV-K":      min_var_strategy(cov_ewa_nls, kf_tp=False),
+        "GMV-EK":      min_var_strategy(cov_ewa_nls, kf_tp=True),
+        # "GMV-E":      min_var_strategy(cov_ewa_nls, kf_tp=False),
         # "GMV-EK":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
         # Best HRP is EXP weights, no KF
-        "HRP":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
-        # "HRP-K":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
+        "HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
+        # "HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
         # "HRP-EK":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
         "EW":       (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
-        strategies["SPY-K"] = (cov_sample, make_spyk_allocator(market_cap_wide))
+        strategies["SPY-100"] = (cov_sample, make_spyk_allocator(market_cap_wide))
     return strategies
 
 

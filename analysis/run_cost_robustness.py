@@ -39,9 +39,9 @@ DEFAULT_COSTS = "0, 2, 5, 10, 20"
 DEFAULT_REBALANCE = 21
 DEFAULT_TOP_K = 100
 
-DEFAULT_STRATEGIES = "EW, SPY-K, HMVA, HMVA-mv"
+DEFAULT_STRATEGIES = "EW, SPY-100, HMVA, HMVA-mv"
 
-BENCHMARK_STRATEGIES = {"EW", "SPY-K"}
+BENCHMARK_STRATEGIES = {"EW", "SPY-100"}
 
 # -----------------------------------------------------------------------------
 # Strategy filtering
