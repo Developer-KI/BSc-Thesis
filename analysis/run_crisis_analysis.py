@@ -24,16 +24,16 @@ SUBFOLDER = "base"
 STRATEGIES = ["HMVA", "HMVA-mv", "HRP-E", "MVO-EK", "GMV-EK", "EW", "SPY-100"]
 
 CRISIS_PERIODS: Dict[str, Tuple[str, str]] = {
-    "Dot-com trough\n(2002)":       ("2002-01-01", "2002-10-31"),
-    "GFC\n(2007–2009)":             ("2007-10-01", "2009-03-31"),
-    "COVID-19 crash\n(2020 Q1)":    ("2020-01-15", "2020-04-30"),
-    "Rate-hike cycle\n(2022)":      ("2022-01-01", "2022-12-31"),
+    "Dot-com":               ("2002-01-01", "2002-10-31"),
+    "GFC":                           ("2007-10-01", "2009-03-31"),
+    "COVID-19":    ("2020-01-15", "2020-04-30"),
+    "Rate-hikes":      ("2022-01-01", "2022-12-31"),
 }
 
 CALM_PERIODS: Dict[str, Tuple[str, str]] = {
-    "Pre-GFC bull\n(2003–2007)":     ("2003-01-01", "2007-09-30"),
-    "Post-GFC bull\n(2009–2020)":    ("2009-04-01", "2020-01-14"),
-    "Post-COVID rebound\n(2020–21)": ("2020-05-01", "2021-12-31"),
+    "Pre-GFC":     ("2003-01-01", "2007-09-30"),
+    "Post-GFC":    ("2009-04-01", "2020-01-14"),
+    "Post-COVID": ("2020-05-01", "2021-12-31"),
 }
 
 _CRISIS_SHADE = "#fce4e4"
@@ -166,11 +166,16 @@ def plot_crisis_equity(daily: pd.DataFrame, outdir: str) -> None:
         if sub.empty:
             ax.set_visible(False)
             continue
-        for col in sub.columns:
+        others = [c for c in sub.columns if c not in _FOCUS]
+        focus  = [c for c in sub.columns if c in _FOCUS]
+        for col in others:
             cum = (1 + sub[col]).cumprod()
-            lw  = 2.2 if col == "HMVA" else 1.2
             ax.plot(cum.index, cum.values,
-                    color=_col_color(col, daily.columns), lw=lw, label=col)
+                    color=_col_color(col, daily.columns), lw=1.0, alpha=0.45, label=col)
+        for col in focus:
+            cum = (1 + sub[col]).cumprod()
+            ax.plot(cum.index, cum.values,
+                    color=_col_color(col, daily.columns), lw=2.4, alpha=1.0, label=col, zorder=5)
         ax.axhline(1, color="black", lw=0.5, ls="--")
         ax.set_title(label.replace("\n", "  "), fontsize=10)
         ax.set_ylabel("Growth of $1")
