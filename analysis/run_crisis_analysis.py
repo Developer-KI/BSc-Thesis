@@ -21,7 +21,7 @@ _PALETTE = _plt._PALETTE
 RESULTS_DIR = "results"
 SUBFOLDER = "base"
 
-STRATEGIES = ["HMVA", "HMVA-mv", "HRP-E", "MVO-EK", "GMV-EK", "EW", "SPY-100"]
+STRATEGIES = ["HMVA", "HMVA-mv", "HRP-E", "MHRP-EK", "MVO-EK", "GMV-EK", "EW", "SPY-100"]
 
 CRISIS_PERIODS: Dict[str, Tuple[str, str]] = {
     "Dot-com":               ("2002-01-01", "2002-10-31"),

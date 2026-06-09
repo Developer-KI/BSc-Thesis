@@ -155,14 +155,35 @@ def _cluster_var(cov: np.ndarray, items: List[int]) -> float:
     return float(w @ sub @ w)
 
 def hrp_weights(cov: np.ndarray,
-                linkage_method: str = "single") -> np.ndarray:
-    """Lopez de Prado (2016) Hierarchical Risk Parity weights."""
+                linkage_method: str = "single",
+                mu: Optional[np.ndarray] = None,
+                bisect_method: str = "vol") -> np.ndarray:
+    """Lopez de Prado (2016) Hierarchical Risk Parity weights.
+
+    Parameters
+    ----------
+    bisect_method : "vol" (default) | "sharpe"
+        "vol"    — inverse cluster variance (standard HRP bisection).
+        "sharpe" — proportional to each cluster's standalone Sharpe ratio;
+                   requires mu. Falls back to inverse-variance when both
+                   clusters have non-positive Sharpe.
+    mu : (N,) expected returns; required when bisect_method="sharpe".
+    """
     N = cov.shape[0]
     corr = _cov_to_corr(cov)
     dist = np.sqrt(np.clip(0.5 * (1.0 - corr), 0.0, None))
     np.fill_diagonal(dist, 0.0)
     link = linkage(squareform(dist, checks=False), method=linkage_method)
     sort_ix = list(leaves_list(link))
+
+    use_sharpe = bisect_method == "sharpe" and mu is not None
+
+    def _cluster_sharpe(items: List[int]) -> float:
+        n_c = len(items)
+        sub = cov[np.ix_(items, items)]
+        sigma = float(np.sqrt(max(float(sub.sum()) / (n_c * n_c), 0.0)))
+        mu_c = float(mu[items].mean())
+        return max(mu_c / sigma, 0.0) if sigma > 1e-12 else 0.0
 
     w = np.ones(N)
     clusters: List[List[int]] = [sort_ix]
@@ -173,8 +194,17 @@ def hrp_weights(cov: np.ndarray,
                     if len(c) > 1]
         for i in range(0, len(clusters), 2):
             c0, c1 = clusters[i], clusters[i + 1]
-            v0, v1 = _cluster_var(cov, c0), _cluster_var(cov, c1)
-            alpha = 1.0 - v0 / (v0 + v1)
+            if use_sharpe:
+                s0, s1 = _cluster_sharpe(c0), _cluster_sharpe(c1)
+                tot = s0 + s1
+                if tot > 1e-12:
+                    alpha = s0 / tot
+                else:
+                    v0, v1 = _cluster_var(cov, c0), _cluster_var(cov, c1)
+                    alpha = 1.0 - v0 / (v0 + v1)
+            else:
+                v0, v1 = _cluster_var(cov, c0), _cluster_var(cov, c1)
+                alpha = 1.0 - v0 / (v0 + v1)
             w[c0] *= alpha
             w[c1] *= 1.0 - alpha
     return w
@@ -183,23 +213,59 @@ def hrp_strategy(
     cov_fn: Callable,
     linkage_method: str = "single",
     kf_tp: bool = True,
+    bisect_method: str = "vol",
+    ewma_halflife: Optional[float] = None,
 ) -> Tuple[Callable, Callable]:
     """
     Factory: (cov_fn, alloc_fn) pair for HRP with optional KF weight smoothing.
 
-    No return signal is available so Q_t defaults to 1.0 in the KF smoother;
-    smoothing is driven entirely by covariance spectral entropy (R_t).
+    Parameters
+    ----------
+    bisect_method : "vol" (default) | "sharpe"
+        "vol"    — inverse cluster variance (standard HRP bisection).
+                   Q_t defaults to 1.0 in the KF smoother; smoothing is
+                   driven entirely by covariance spectral entropy (R_t).
+        "sharpe" — proportional to each cluster's standalone Sharpe ratio,
+                   using mu_BL_trend as the return signal. KF smoother uses
+                   the full (mu, R_t) gain as in HMVA.
+    ewma_halflife : EWMA pseudo-returns halflife in trading days; only used
+                    when bisect_method="sharpe". None = uniform window.
     """
+    cache: Dict = {}
     prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
+    kf_cache: Dict[str, Optional[np.ndarray]] = {"mu_prev": None}
 
-    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
-        w = hrp_weights(cov, linkage_method=linkage_method)
-        if kf_tp and prev_w["w"] is not None:
-            w = _kf_smooth_weights(w, prev_w["w"], cov)
-        prev_w["w"] = w.copy()
-        return w
+    if bisect_method == "sharpe":
+        def _cov_fn(window: np.ndarray) -> np.ndarray:
+            if ewma_halflife is not None:
+                window = _ewma_pseudo(window, halflife=ewma_halflife)
+            cov = cov_fn(window)
+            cache["window"] = window
+            return cov
 
-    return cov_fn, _alloc_fn
+        def _alloc_fn(cov: np.ndarray) -> np.ndarray:
+            window = cache.get("window", np.zeros((1, cov.shape[0])))
+            mu = mu_BL_trend(window, cov)
+            w = hrp_weights(cov, linkage_method=linkage_method,
+                            mu=mu, bisect_method="sharpe")
+            if kf_tp and prev_w["w"] is not None and kf_cache["mu_prev"] is not None:
+                w = _kf_smooth_weights(w, prev_w["w"], cov, mu, kf_cache["mu_prev"])
+            prev_w["w"] = w.copy()
+            if kf_tp:
+                kf_cache["mu_prev"] = mu.copy()
+            return w
+
+        return _cov_fn, _alloc_fn
+
+    else:
+        def _alloc_fn_vol(cov: np.ndarray) -> np.ndarray:
+            w = hrp_weights(cov, linkage_method=linkage_method)
+            if kf_tp and prev_w["w"] is not None:
+                w = _kf_smooth_weights(w, prev_w["w"], cov)
+            prev_w["w"] = w.copy()
+            return w
+
+        return cov_fn, _alloc_fn_vol
 
 def min_var_weights(cov: np.ndarray) -> np.ndarray:
     """
@@ -738,7 +804,7 @@ def backtest(returns: pd.DataFrame,
 
 
 # ---------------------------------------------------------------------------
-# Point-in-time backtest with time-varying universe (CRSP S&P 500)
+# Point-in-time backtest with time-varying universe
 # ---------------------------------------------------------------------------
 
 # Commented lines are for full runs to compare ablation of exp weights and filtering
@@ -750,6 +816,10 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> Stra
         "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
         # "MVO-E":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
         # "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
+        # Best MHRP is EXp weights, KF
+        "MHRP-EK":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=21),
+        #"MHRP":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=None),
+        #"MHRP-E":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=21),
         # Best GMV is EXP weights, KF
         "GMV-EK":      min_var_strategy(cov_ewa_nls, kf_tp=True),
         # "GMV-E":      min_var_strategy(cov_ewa_nls, kf_tp=False),
@@ -1189,7 +1259,7 @@ def plot_backtest_results(daily: pd.DataFrame,
     _plt.plot_return_distribution(
         monthly, title=f"Monthly Return Distributions{suf}",
         save_path=f"{outdir}/return_dist.png",
-        subplot_order=["HMVA", "HMVA-mv", "EW", "SPY-K"])
+        subplot_order=["HMVA", "HMVA-mv", "EW", "SPY-100"])
     plt.close("all")
 
     _plt.plot_correlation_heatmap(
