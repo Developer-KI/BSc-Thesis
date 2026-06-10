@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+
+<html lang="en"> <head> <meta charset="utf-8"/> <meta content="width=device-width, initial-scale=1.0" name="viewport"/> <title>HMVA and Thesis Presentation</title> <link href="https://fonts.googleapis.com" rel="preconnect"/> <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/> <link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,500&amp;family=Libre+Franklin:wght@300;400;500;600;700&amp;family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400;1,6..72,500&amp;family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;0,8..60,700;1,8..60,400&amp;family=IBM+Plex+Sans:wght@300;400;500;600;700&amp;family=Archivo:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/> <style>
+  :root{
+    --font-head:'Spectral';
+    --font-body:'Libre Franklin';
+    --ink:#161F38;
+    --ink-2:#2B3656;
+    --slate:#56607A;
+    --muted:#828AA0;
+    --red:#C00A35;
+    --red-deep:#9A0A2C;
+    --paper:#FBFAF6;
+    --paper-2:#F2EFE7;
+    --panel:#FFFFFF;
+    --line:rgba(22,31,56,0.13);
+    --line-soft:rgba(22,31,56,0.08);
+    --gold:#C9A24B;
+  }
+  *{box-sizing:border-box;}
+  deck-stage:not(:defined){visibility:hidden;}
+  html,body{margin:0;padding:0;background:#0b0f1c;}
+  deck-stage{font-family:var(--font-body),system-ui,sans-serif;}
+
+  section{
+    background:var(--paper);
+    color:var(--ink);
+    padding:96px 120px;
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+    justify-content:flex-start;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- typography ---------- */
+  .kicker{
+    font-size:21px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--red);display:flex;align-items:center;gap:16px;
+  }
+  .kicker::before{content:"";width:42px;height:2px;background:var(--red);display:inline-block;}
+  h1,h2,h3{font-family:var(--font-head),serif;font-weight:600;margin:0;line-height:1.04;letter-spacing:-.01em;}
+  .title{font-size:66px;font-weight:600;line-height:1.05;}
+  .lede{font-size:30px;line-height:1.42;color:var(--slate);font-weight:400;max-width:1180px;}
+  p{margin:0;}
+  em.v{font-family:var(--font-head),serif;font-style:italic;font-weight:500;}
+
+  /* ---------- title slide ---------- */
+  .s-title{background:var(--ink);color:#F4F2EC;display:flex;flex-direction:column;justify-content:space-between;padding:104px 120px;}
+  .s-title .top{display:flex;justify-content:space-between;align-items:flex-start;}
+  .crest{font-family:var(--font-head),serif;font-size:23px;letter-spacing:.04em;color:#EDE9DF;line-height:1.35;}
+  .crest b{font-weight:600;}
+  .s-title .deg{font-size:19px;letter-spacing:.2em;text-transform:uppercase;color:#9AA2B8;text-align:right;line-height:1.7;}
+  .s-title h1{font-size:92px;line-height:1.02;font-weight:600;max-width:1500px;color:#FBFAF6;}
+  .s-title .sub{font-size:30px;color:#C7CCDA;font-weight:300;margin-top:30px;font-family:var(--font-head),serif;font-style:italic;}
+  .redrule{width:120px;height:4px;background:var(--red);margin:36px 0 0;}
+  .s-title .byline{display:flex;justify-content:space-between;align-items:flex-end;border-top:1px solid rgba(255,255,255,.16);padding-top:30px;}
+  .s-title .byline .who{font-size:30px;color:#FBFAF6;font-weight:500;}
+  .s-title .byline .who span{display:block;font-size:20px;color:#9AA2B8;font-weight:400;margin-top:6px;}
+  .s-title .byline .meta{font-size:20px;color:#9AA2B8;text-align:right;line-height:1.7;}
+
+  /* ---------- divider slides ---------- */
+  .s-div{background:var(--ink);color:#F4F2EC;display:flex;flex-direction:column;justify-content:center;}
+  .s-div .num{font-family:var(--font-head),serif;font-size:30px;letter-spacing:.4em;color:var(--red);font-weight:500;}
+  .s-div h2{font-size:104px;color:#FBFAF6;margin-top:18px;max-width:1300px;}
+  .s-div .dsub{font-size:28px;color:#AEB5C8;margin-top:34px;max-width:1080px;line-height:1.5;font-weight:300;}
+  .s-div .agenda{margin-top:60px;display:flex;gap:14px;}
+  .s-div .agenda .dot{font-size:19px;letter-spacing:.16em;text-transform:uppercase;color:#6F7894;padding:9px 20px;border:1px solid rgba(255,255,255,.16);border-radius:40px;}
+  .s-div .agenda .dot.on{color:#FBFAF6;border-color:var(--red);background:rgba(192,10,53,.16);}
+
+  /* ---------- content scaffolding ---------- */
+  .head{display:flex;flex-direction:column;gap:18px;margin-bottom:46px;}
+  .head h2{font-size:60px;}
+  .cols{display:grid;gap:54px;}
+  .cols-2{grid-template-columns:1fr 1fr;}
+  .cols-5-7{grid-template-columns:5fr 7fr;}
+  .cols-7-5{grid-template-columns:7fr 5fr;}
+  .stack{display:flex;flex-direction:column;}
+
+  .body{font-size:28px;line-height:1.5;color:var(--ink);font-weight:400;}
+  .body.soft{color:var(--slate);}
+  .body + .body{margin-top:22px;}
+
+  /* numbered / bulleted points */
+  .points{display:flex;flex-direction:column;gap:26px;}
+  .pt{display:grid;grid-template-columns:auto 1fr;gap:22px;align-items:start;}
+  .pt .ix{font-family:var(--font-head),serif;font-size:26px;font-weight:600;color:var(--red);line-height:1.2;padding-top:2px;min-width:34px;}
+  .pt .tx{font-size:26px;line-height:1.46;color:var(--ink);}
+  .pt .tx b{font-weight:600;}
+  .pt .tx span{color:var(--slate);}
+
+  /* lead-in tag */
+  .tag{display:inline-block;font-size:18px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--slate);margin-bottom:14px;}
+
+  /* equation panel */
+  .eqwrap{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--red);border-radius:4px;padding:34px 40px;display:flex;flex-direction:column;gap:14px;}
+  .eqwrap .eqlabel{font-size:18px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);}
+  .eq{font-family:var(--font-head),serif;font-size:40px;color:var(--ink);display:flex;align-items:center;flex-wrap:wrap;gap:12px;font-weight:500;}
+  .eq i{font-style:italic;}
+  .eq .op{color:var(--red);font-style:normal;padding:0 4px;}
+  .eq .small{font-size:.62em;vertical-align:sub;font-style:italic;}
+  .frac{display:inline-flex;flex-direction:column;text-align:center;vertical-align:middle;margin:0 6px;}
+  .frac .n{padding:0 14px 6px;border-bottom:2px solid var(--ink);white-space:nowrap;}
+  .frac .d{padding:6px 14px 0;white-space:nowrap;}
+  .eqnote{font-size:21px;color:var(--slate);line-height:1.45;}
+  .eqnote b{color:var(--ink);font-weight:600;}
+
+  /* stat callouts */
+  .stats{display:flex;gap:0;border-top:2px solid var(--ink);}
+  .stat{flex:1;padding:26px 28px 8px;border-right:1px solid var(--line);}
+  .stat:last-child{border-right:none;}
+  .stat .v{font-family:var(--font-head),serif;font-size:74px;font-weight:600;line-height:1;color:var(--ink);letter-spacing:-.02em;}
+  .stat .v .u{font-size:.5em;color:var(--red);font-weight:600;}
+  .stat .l{font-size:20px;color:var(--slate);margin-top:14px;line-height:1.4;}
+  .stat.hl .v{color:var(--red);}
+
+  /* tables */
+  table.t{width:100%;border-collapse:collapse;font-size:23px;font-variant-numeric:tabular-nums;}
+  table.t th{font-family:var(--font-body);font-weight:600;font-size:19px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);text-align:right;padding:14px 18px;border-bottom:2px solid var(--ink);}
+  table.t th:first-child{text-align:left;}
+  table.t td{padding:15px 18px;text-align:right;border-bottom:1px solid var(--line-soft);color:var(--ink);}
+  table.t td:first-child{text-align:left;font-weight:500;}
+  table.t tr.win td{background:rgba(192,10,53,.07);}
+  table.t tr.win td:first-child{color:var(--red-deep);font-weight:700;box-shadow:inset 3px 0 0 var(--red);}
+  table.t tr.win td{font-weight:600;}
+  table.t .muted td{color:var(--muted);}
+  table.t .muted td:first-child{color:var(--muted);font-weight:400;}
+  .tcap{font-size:19px;color:var(--muted);margin-top:18px;line-height:1.45;}
+
+  /* figure placeholder */
+  .figbox{position:relative;background:repeating-linear-gradient(135deg,#F6F3EC 0 18px,#F1EDE4 18px 36px);border:2px dashed rgba(22,31,56,.28);border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:36px;text-align:center;}
+  .figbox .ic{width:58px;height:58px;border:2px solid var(--red);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--red);}
+  .figbox .ft{font-family:var(--font-head),serif;font-size:26px;font-weight:600;color:var(--ink);}
+  .figbox .fl{font-size:20px;color:var(--slate);max-width:520px;line-height:1.45;}
+  .figbox .badge{position:absolute;top:16px;left:16px;font-size:15px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);background:var(--paper);padding:5px 12px;border-radius:30px;border:1px solid var(--line);}
+
+  /* charts */
+  .chartcard{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:24px 28px 22px;display:flex;flex-direction:column;gap:4px;}
+  .chartcard .ch-h{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap;}
+  .chartcard .ch-t{font-family:var(--font-head),serif;font-size:24px;font-weight:600;color:var(--ink);line-height:1.2;max-width:62%;}
+  .chartcard .ch-cap{font-size:18px;color:var(--muted);line-height:1.45;margin-top:10px;}
+  .chartcard .ch-cap b{color:var(--slate);font-weight:600;}
+  .chartcard svg{display:block;width:100%;height:auto;margin-top:6px;}
+  .legend{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding-top:4px;}
+  .legend .lg{display:flex;align-items:center;gap:8px;font-size:18px;color:var(--slate);font-weight:500;white-space:nowrap;}
+  .legend .sw{width:15px;height:15px;border-radius:3px;display:inline-block;}
+
+  /* pill / chips */
+  .chips{display:flex;flex-wrap:wrap;gap:12px;}
+  .chip{font-size:21px;color:var(--ink);background:var(--paper-2);border:1px solid var(--line-soft);border-radius:40px;padding:10px 22px;font-weight:500;white-space:nowrap;}
+  .chip b{color:var(--red);font-weight:700;}
+
+  /* flow / stage cards */
+  .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;}
+  .fcard{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:28px 26px;display:flex;flex-direction:column;gap:14px;position:relative;}
+  .fcard .step{font-family:var(--font-head),serif;font-size:21px;font-weight:600;color:var(--red);}
+  .fcard h3{font-size:29px;line-height:1.12;}
+  .fcard p{font-size:21px;color:var(--slate);line-height:1.42;}
+  .fcard .arr{position:absolute;right:-26px;top:50%;transform:translateY(-50%);color:var(--red);font-size:26px;z-index:2;}
+
+  /* callout strip */
+  .callout{background:var(--ink);color:#F2EFE7;border-radius:6px;padding:30px 38px;display:flex;align-items:center;gap:28px;}
+  .callout .big{font-family:var(--font-head),serif;font-size:58px;font-weight:600;color:#fff;line-height:1;white-space:nowrap;}
+  .callout .big .u{color:var(--gold);font-size:.5em;}
+  .callout .tx{font-size:24px;line-height:1.42;color:#C7CCDA;}
+  .callout .tx b{color:#fff;font-weight:600;}
+
+  /* two-pane definition */
+  .deflist{display:flex;flex-direction:column;gap:0;}
+  .defrow{display:grid;grid-template-columns:230px 1fr;gap:30px;padding:22px 0;border-bottom:1px solid var(--line-soft);align-items:baseline;}
+  .defrow:last-child{border-bottom:none;}
+  .defrow .k{font-family:var(--font-head),serif;font-size:25px;font-weight:600;color:var(--red-deep);}
+  .defrow .vv{font-size:24px;color:var(--ink);line-height:1.42;}
+  .defrow .vv span{color:var(--slate);}
+
+  .footnote{position:absolute;bottom:54px;left:120px;font-size:18px;color:var(--muted);}
+  .pgmark{position:absolute;bottom:54px;right:120px;font-size:18px;color:var(--muted);letter-spacing:.1em;}
+  section{position:relative;}
+
+  /* entrance - none: keeps content reliably visible in capture, print and PPTX export */
+  .anim{opacity:1;}
+
+
+  /* ---------- generated example visuals ---------- */
+  .genviz{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:20px 24px;display:flex;flex-direction:column;gap:10px;width:100%;height:100%;}
+  .genviz .gv-title{font-family:var(--font-head),serif;font-size:24px;font-weight:600;color:var(--ink);}
+  .genviz .gv-caption{font-size:17px;line-height:1.35;color:var(--slate);}
+  .genviz svg{width:100%;flex:1;min-height:0;display:block;}
+  .gv-axis{stroke:#161F38;stroke-width:2;}
+  .gv-grid{stroke:#E7E3D9;stroke-width:1;}
+  .gv-red{stroke:var(--red);fill:none;}
+  .gv-ink{stroke:var(--ink);fill:none;}
+  .gv-fill-red{fill:var(--red);}
+  .gv-fill-ink{fill:var(--ink);}
+  .gv-fill-soft{fill:#F2EFE7;}
+  .gv-label{font-family:var(--font-body),sans-serif;font-size:15px;fill:var(--slate);}
+  .gv-label-dark{font-family:var(--font-body),sans-serif;font-size:16px;fill:var(--ink);font-weight:600;}
+  .gv-num{font-family:var(--font-head),serif;font-size:24px;fill:var(--ink);font-weight:600;}
+
+  .present-controls{position:fixed;right:18px;bottom:18px;z-index:9999;display:flex;gap:8px;align-items:center;background:rgba(11,15,28,.82);color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:8px 12px;font:14px system-ui,sans-serif;backdrop-filter:blur(8px)}
+  .present-controls button{background:#fff;color:#111;border:0;border-radius:999px;padding:4px 10px;font:600 13px system-ui,sans-serif;cursor:pointer}
+  .present-controls .count{min-width:62px;text-align:center;color:#d9dce8}
+  .present-help{position:fixed;left:18px;bottom:18px;z-index:9998;color:#c9cedd;font:13px system-ui,sans-serif;background:rgba(11,15,28,.55);padding:7px 11px;border-radius:999px}
+
+
+
+  /* centered no-graph layout overrides */
+  section{justify-content:center;align-items:center;padding:72px 110px;}
+  section:not(.s-title):not(.s-div) .head{align-items:center;text-align:center;margin-bottom:34px;max-width:1500px;width:100%;}
+  section:not(.s-title):not(.s-div) .cols,
+  section:not(.s-title):not(.s-div) .flow,
+  section:not(.s-title):not(.s-div) .stats,
+  section:not(.s-title):not(.s-div) table.t{max-width:1500px;margin-left:auto;margin-right:auto;}
+  section:not(.s-title):not(.s-div) .cols{width:100%;align-items:center;}
+  .s-div{align-items:center;text-align:center;}
+  .s-div .agenda{justify-content:center;}
+  .s-title{justify-content:center;gap:56px;}
+  .s-title .top,.s-title .byline{width:100%;}
+  .textcard{align-self:center;}
+  .callout{max-width:1050px;margin-left:auto;margin-right:auto;}
+  .eqwrap{max-width:100%;}
+  .points{max-width:1050px;margin-left:auto;margin-right:auto;}
+  .deflist{max-width:1050px;margin-left:auto;margin-right:auto;}
+  .figbox,.genviz{margin-left:auto;margin-right:auto;}
+
+  /* estimator notation and within family Sharpe bars */
+  .hatvar{position:relative;display:inline-block;font-style:italic;line-height:1;padding-top:.08em;}
+  .hatvar::before{content:"ˆ";position:absolute;left:0;right:0;top:-.58em;text-align:center;font-style:normal;font-family:var(--font-head),serif;font-size:.82em;}
+  .hatword{position:relative;display:inline-block;font-style:normal;line-height:1;padding-top:.08em;}
+  .hatword::before{content:"ˆ";position:absolute;left:0;right:0;top:-.62em;text-align:center;font-style:normal;font-family:var(--font-head),serif;font-size:.72em;}
+  .sharpe-panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:30px 34px;display:flex;flex-direction:column;gap:22px;width:100%;}
+  .sharpe-row{display:grid;grid-template-columns:84px 1fr 74px;align-items:center;gap:18px;}
+  .sharpe-name{font-family:var(--font-head),serif;font-size:27px;font-weight:600;color:var(--ink);}
+  .sharpe-track{height:22px;background:var(--paper-2);border:1px solid var(--line-soft);border-radius:999px;overflow:hidden;}
+  .sharpe-fill{height:100%;background:var(--red);border-radius:999px;}
+  .sharpe-value{font-size:24px;font-weight:700;color:var(--red-deep);font-variant-numeric:tabular-nums;text-align:right;}
+  .mini-matrix{display:grid;grid-template-columns:120px repeat(3,1fr);gap:8px;margin-top:4px;font-size:19px;text-align:center;}
+  .mini-matrix div{padding:8px 10px;border-radius:8px;background:var(--paper-2);color:var(--slate);}
+  .mini-matrix .headcell{font-weight:700;color:var(--ink);background:transparent;}
+  .mini-matrix .best{background:rgba(192,10,53,.10);color:var(--red-deep);font-weight:700;}
+</style> </head> <body> <deck-stage height="1080" width="1920">  1 and TITLE  <section class="s-title" data-label="Title"> <div class="top"> <div class="crest"><b>University of Amsterdam</b><br/>Faculty of Economics &amp; Business</div> <div class="deg">BSc Econometrics<br/>&amp; Data Science<br/>Thesis Presentation</div> </div> <div> <div class="kicker" style="color:#E8889E;">Optimal Portfolio Strategies for a Large Universe of Assets</div> <h1 class="anim">Building mean variance portfolios that perform out of sample</h1> <div class="sub anim d1">Hierarchical Mean Variance Allocation and a noise robust alternative to the Markowitz optimizer</div> <div class="redrule"></div> </div> <div class="byline"> <div class="who">Kiril Ivanov<span>Student ID 15174433</span></div> <div class="meta">Supervisor · Dr. Sander Barendse<br/>June 2026</div> </div> </section>  2 and PART I DIVIDER  <section class="s-div" data-label="Part I"> <div class="num">PART I</div> <h2 class="anim">The problem, and<br/>the literature around it</h2> <div class="dsub anim d1">Why the classical mean variance optimizer collapses out of sample and and what fifty years of research has tried to do about it.</div> <div class="agenda anim d2"> <div class="dot on">I · Introduction</div> <div class="dot">II · Methodology</div> <div class="dot">III · Results</div> <div class="dot">IV · Conclusion</div> </div> </section>  3 and THE PROBLEM (topic intro)  <section data-label="The problem"> <div class="head anim"> <div class="kicker">The topic</div> <h2>Optimal portfolios for a large universe of assets</h2> </div> <div class="cols cols-5-7"> <div class="stack anim d1"> <p class="lede">Markowitz mean variance optimisation is the textbook answer is hold the portfolio that best trades off risk against return. In practice it rarely survives contact with real data.</p> <div class="eqwrap" style="margin-top:38px;"> <div class="eqlabel">The inputs it needs</div> <div class="eq"><i>w</i><span class="op">∝</span><i>Σ</i><span class="small">−1</span> <i>μ</i></div> <div class="eqnote">A return signal <em class="v">μ</em> and a covariance matrix <em class="v">Σ</em> and both <b>estimated</b>, both noisy, then <b>inverted</b>.</div> </div> </div> <div class="stack anim d2"> <div class="points"> <div class="pt"><div class="ix">i.</div><div class="tx"><b>The return signal barely predicts.</b> <span>Out of sample R² of the best predictors sits near 1% and the signal is almost all noise.</span></div></div> <div class="pt"><div class="ix">ii.</div><div class="tx"><b>The covariance is hard to estimate.</b> <span>With many assets relative to the sample, there are too many entries to pin down precisely.</span></div></div> <div class="pt"><div class="ix">↯</div><div class="tx"><b>Inversion amplifies both.</b> <span>Matrix inversion loads hardest on the smallest, least reliable eigenvalues and turning estimation error into unstable, concentrated bets.</span></div></div> </div> <div class="callout" style="margin-top:40px;"> <div class="tx"><b>The question.</b> Can we target risk adjusted return out of sample <b>without</b> ever inverting an estimated covariance matrix?</div> </div> </div> </div> <div class="pgmark">UvA · EDS</div> </section>  4 and WHY MVO FAILS (literature)  <section data-label="Why it fails"> <div class="head anim"> <div class="kicker">Literature · the diagnosis</div> <h2>“Optimization error maximization”</h2> </div> <div class="cols cols-2"> <div class="stack anim d1"> <p class="body soft">Six decades of work converge on one verdict is the optimizer doesn't cancel estimation error, it <em class="v">magnifies</em> it.</p> <div class="deflist" style="margin-top:30px;"> <div class="defrow"><div class="k">Michaud<br/><span style="font-size:18px;color:var(--muted);font-style:normal;font-family:var(--font-body)">(1989)</span></div><div class="vv">Names the pathology is the optimizer behaves like an <span>error maximizer.</span></div></div> <div class="defrow"><div class="k">Chopra Ziemba<br/><span style="font-size:18px;color:var(--muted);font-style:normal;font-family:var(--font-body)">(1993)</span></div><div class="vv">Errors in means hurt approximately 10 times more than errors in covariances.</div></div> </div> </div> <div class="stack anim d2"> <div class="eqwrap textcard" style="max-width:780px;margin:0 auto;"> <div class="eqlabel">Weight sensitivity</div> <div class="body" style="font-size:25px;line-height:1.42;">A tiny change in expected return estimates can produce a large change in mean variance weights. This is the intuition behind optimization error maximization.</div> </div> <div class="callout" style="margin-top:30px;background:var(--paper-2);color:var(--ink);"> <div class="big" style="color:var(--red);">1/N</div> <div class="tx" style="color:var(--slate);"><b style="color:var(--ink);">DeMiguel et al. (2009).</b> Across 14 strategies and 7 datasets, no sophisticated optimizer reliably beat the naïve equal weight portfolio. <b style="color:var(--ink);">This is the hurdle every new method must clear.</b></div> </div> </div> </div> <div class="pgmark">UvA · EDS</div> </section>  5 and LITERATURE LANDSCAPE → GAP  <section data-label="The gap"> <div class="head anim"> <div class="kicker">Literature · the responses &amp; the gap</div> <h2>Two repair traditions and and the opening between them</h2> </div> <div class="cols" style="grid-template-columns:1fr 1fr;gap:44px;"> <div class="stack anim d1"> <span class="tag">Fix the inputs</span> <div class="points"> <div class="pt"><div class="ix">·</div><div class="tx"><b>Shrink the covariance.</b> <span>Ledoit &amp; Wolf (2004, 2020) and linear, then nonlinear eigenvalue shrinkage</span></div></div> <div class="pt"><div class="ix">·</div><div class="tx"><b>Stabilise the returns.</b> <span>Black Litterman (1992) blends a prior with views, momentum and factors (Jegadeesh Titman 1993, Fama French)</span></div></div> <div class="pt"><div class="ix">·</div><div class="tx"><b>Constrain the weights.</b> <span>Jagannathan &amp; Ma (2003) and no short sale equivalency with implicit shrinkage </span></div></div> </div> </div> <div class="stack anim d2"> <span class="tag">Re-design the construction</span> <div class="points"> <div class="pt"><div class="ix">·</div><div class="tx"><b>Hierarchical Risk Parity.</b> <span>López de Prado (2016) and cluster the correlation matrix, allocate risk through a tree, never invert <em class="v"><span class="hatvar">Σ</span></em>.</span></div></div> </div> <div class="callout" style="margin-top:30px;"> <div class="tx"><b>The gap.</b> HRP solved noise robustness for <em class="v">risk</em> allocation and but no construction has done the same for <b>mean-variance (known as risk adjusted returns)</b> out of sample. <b>That is this thesis's contribution.</b></div> </div> </div> </div> <div class="pgmark">UvA · EDS</div> </section>  6 and PART II DIVIDER  <section class="s-div" data-label="Part II"> <div class="num">PART II</div> <h2 class="anim">Methodology</h2> <div class="dsub anim d1">Hierarchical Mean Variance Allocation and the construction, the estimators that feed it, and how it is implemented at scale.</div> <div class="agenda anim d2"> <div class="dot">I · Introduction</div> <div class="dot on">II · Methodology</div> <div class="dot">III · Results</div> <div class="dot">IV · Conclusion</div> </div> </section>  7 and HMVA OVERVIEW  <section data-label="HMVA overview"> <div class="head anim"> <div class="kicker">HMVA · the idea</div> <h2>One decision, four stages and no matrix ever inverted</h2> </div> <div class="flow anim d1"> <div class="fcard"><div class="step">Stage 1</div><h3>Weight &amp; estimate</h3><p>Use the return window, transform it using exponential weighting, then estimate <em class="v">μ</em> and <em class="v">Σ</em>.</p><div class="arr">→</div></div> <div class="fcard"><div class="step">Stage 2</div><h3>Build the tree</h3><p>Split the universe top down so the two branches co move as little as possible.</p><div class="arr">→</div></div> <div class="fcard"><div class="step">Stage 3</div><h3>Allocate recursively</h3><p>Send capital down the tree in proportion to each branch's Sharpe proxy.</p><div class="arr">→</div></div> <div class="fcard"><div class="step">Stage 4</div><h3>Filter turnover</h3><p>Blend new weights with old via a Kalman type adaptive gain filter.</p></div> </div> <div class="cols" style="margin-top:50px;grid-template-columns:1fr;max-width:1050px;margin-left:auto;margin-right:auto;"><div class="eqwrap textcard" style="max-width:980px;margin:0 auto;text-align:center;"> <div class="eqlabel">Fallback mechanism</div> <div class="eq" style="font-size:34px;justify-content:center;">No positive branch signal means inverse variance bisection</div> <div class="eqnote">When both child clusters have non positive Sharpe proxies, HMVA stops trusting the return signal at that split and allocates by inverse variance instead. This keeps the portfolio long only and prevents noisy expected returns from forcing concentrated bets.</div> </div></div> <div class="pgmark">Methods · 2.1</div> </section>  8 and TREE CONSTRUCTION  <section data-label="Tree split"> <div class="head anim"> <div class="kicker">Stage 2 · the hierarchy</div> <h2>Splits that minimise how much the branches co move</h2> </div> <div class="cols" style="grid-template-columns:1fr;max-width:1120px;margin-left:auto;margin-right:auto;text-align:center;"> <div class="stack anim d1" style="align-items:center;justify-content:center;"> <div class="eqwrap" style="max-width:1050px;margin:0 auto;text-align:center;"> <div class="eqlabel">Split objective and minimised over bipartitions (L, R)</div> <div class="eq"><i>f</i>(<i>L</i>,<i>R</i>)<span class="op">=</span><span style="color:var(--red-deep)"><span class="hatword">Cov</span></span><span class="small" style="font-style:normal">EW</span>(<i>L</i>,<i>R</i>)<span class="op">+</span><span style="color:var(--red-deep)"><span class="hatword">Corr</span></span><span class="small" style="font-style:normal">EW</span>(<i>L</i>,<i>R</i>)</div> <div class="eqnote">Both terms are computed from the <b>equal weighted sub portfolios</b> of each branch and not the nearest asset pair. Small covariance ⇒ little absolute co movement and small correlation ⇒ little relative co movement.</div> </div> <p class="body soft" style="margin-top:30px;">Evaluating whole sub portfolios and rather than single linkages as in standard HRP and means diversification is measured at <em class="v">exactly the level where capital is allocated</em>. Branches end up with predictable total risk.</p> </div> <div class="stack anim d2" style="justify-content:center;"> </div> </div> <div class="pgmark">Methods · 2.1</div> </section>  9 and RECURSIVE ALLOCATION  <section data-label="Allocation"> <div class="head anim"> <div class="kicker">Stage 3 · recursive allocation</div> <h2>Capital follows risk adjusted return down the tree</h2> </div> <div class="cols cols-2"> <div class="stack anim d1"> <div class="eqwrap"> <div class="eqlabel">At each node and split by cluster Sharpe proxy</div> <div class="eq"><i>α</i><span class="small">L</span><span class="op">=</span><span class="frac"><span class="n"><i>S</i>(<i>L</i>)</span><span class="d"><i>S</i>(<i>L</i>) + <i>S</i>(<i>R</i>)</span></span></div> <div class="eqnote"><i>S</i>(<i>C</i>) <b>= equal weight return ÷ equal weight volatility</b> of the cluster, floored at zero. The branch with the higher Sharpe proxy receives more capital.</div> </div> <p class="body soft" style="margin-top:26px;">Because allocation is recursive, the tree structure itself <em class="v">bounds the maximum weight</em> on any one cluster and implicit concentration limits, no hard caps.</p> </div> <div class="stack anim d2"> <div class="eqwrap" style="border-left-color:var(--slate);"> <div class="eqlabel">Fallback and no positive signal</div> <div class="eq"><i>α</i><span class="small">L</span><span class="op">∝</span><i>IV</i>(<i>L</i>)<span class="op">=</span><span class="frac"><span class="n">1</span><span class="d">√ Var<span class="small" style="font-style:normal">EW</span>(<i>L</i>)</span></span></div> <div class="eqnote"></div> </div> <div class="callout" style="margin-top:30px;background:var(--paper-2);color:var(--ink);"> <div class="tx" style="color:var(--slate);">The signal only ever <b style="color:var(--ink)">tilts between branches</b> and it is never inverted onto individual weights, so a noisy <em class="v"><span class="hatvar">μ</span></em> cannot concentrate the book.</div> </div> </div> </div> <div class="pgmark">Methods · 2.1</div> </section>  10 and KALMAN FILTER  <section data-label="Turnover filter"> <div class="head anim"> <div class="kicker">Stage 4 · turnover control</div> <h2>A Kalman type gain that moves only when it should</h2> </div> <div class="cols cols-7-5"> <div class="stack anim d1"> <div class="eqwrap"> <div class="eqlabel">Smoothed weights and signal to noise convex blend</div> <div class="eq"><i>w̃</i><span class="op">=</span><i>K</i> <i>w</i><span class="small">new</span><span class="op">+</span>(1−<i>K</i>) <i>w</i><span class="small">old</span><span style="margin:0 18px;color:var(--line)">|</span><i>K</i><span class="op">=</span><span class="frac"><span class="n"><i>Y</i></span><span class="d"><i>X</i> + <i>Y</i></span></span></div> <div class="eqnote">X and spectral entropy of <span class="hatvar">Σ</span> is how diffuse the risk structure is. Y and relative change in <span class="hatvar">μ</span> is how much the signal just moved.</div> </div> </div> <div class="stack anim d2" style="justify-content:center;gap:20px;"> <div class="defrow" style="border:none;grid-template-columns:1fr;gap:8px;padding:0;"> <div class="k" style="color:var(--ink)">Diffuse covariance, stable signal</div> <div class="vv"><span><em class="v">K</em> → 0 · the portfolio barely moves.</span></div> </div> <div class="defrow" style="border:none;grid-template-columns:1fr;gap:8px;padding:0;border-top:1px solid var(--line-soft);padding-top:20px;"> <div class="k" style="color:var(--red-deep)">Sharp signal shift</div> <div class="vv"><span><em class="v">K</em> → 1 · it updates aggressively toward the new target.</span></div> </div> <p class="body soft" style="font-size:22px;margin-top:6px;">Turnover and and trading cost and is spent only when new information justifies it.</p> </div> </div> <div class="pgmark">Methods · 2.1</div> </section>  11 and ESTIMATION  <section data-label="Estimation"> <div class="head anim"> <div class="kicker">Estimation · the inputs</div> <h2>Best in class estimators and so the comparison is fair</h2> </div> <div class="cols cols-2"> <div class="stack anim d1"> <span class="tag">Covariance · Nonlinear shrinkage</span> <div class="eqwrap"> <div class="eqlabel">Ledoit &amp; Wolf (2020)</div> <div class="eq" style="font-size:34px;"><i><span class="hatvar">Σ</span></i><span class="small" style="font-style:normal">NLS</span><span class="op">=</span><i>U</i> diag(<i>λ</i><span class="small">i</span><span style="font-style:normal">⋆</span>) <i>U</i><span style="font-style:normal">⊤</span></div> <div class="eqnote">Keep the eigenvectors and <b>shrink each eigenvalue individually</b> toward its oracle value. Undoes the eigenvalue dispersion that destabilises any optimizer.</div> </div> </div> <div class="stack anim d2"> <span class="tag">Return · Posterior return signal</span> <div class="eqwrap" style="border-left-color:var(--slate);"> <div class="eqlabel"></div> <div class="eq" style="font-size:30px;"><i><span class="hatvar">μ</span></i><span class="small" style="font-style:normal">PRS</span><span class="op">=</span><i>π</i><span class="op">+</span><i><span class="hatvar">Σ</span></i>(<i><span class="hatvar">Σ</span></i>+diag<i><span class="hatvar">Σ</span></i>)<span class="small">−1</span>(<i>Q</i>−<i>π</i>)</div> <div class="eqnote">A cross sectional prior <em class="v">π</em> blended with a <b>skip a month momentum view Q</b>. More stable than the raw sample mean.</div> </div> </div> </div> <div class="callout anim d3" style="margin-top:46px;"> <div class="tx"><b>Every strategy gets these same inputs.</b> So any difference in performance is attributable to the <em class="v">construction mechanism</em> and not to the data each method is allowed to see.</div> </div> <div class="pgmark">Methods · 2.3</div> </section>  12 and IMPLEMENTATION  <section data-label="Implementation"> <div class="head anim"> <div class="kicker">Implementation · making it scale</div> <h2>Exact where it's cheap, near exact where it isn't</h2> </div> <div class="cols cols-2"> <div class="stack anim d1"> <p class="body soft">The only step that can't scale is the split is a cluster of size <em class="v">n</em> has 2<sup>n−1</sup>−1 possible bipartitions and fine near the leaves, intractable near the root.</p> <div class="deflist" style="margin-top:26px;"> <div class="defrow"><div class="k">Small<br/><span style="font-size:18px;color:var(--muted);font-style:normal;font-family:var(--font-body)">n ≤ 10</span></div><div class="vv"><b>Exhaustive search.</b> <span>Enumerate every bipartition, return the global optimum of <em class="v">f</em>.</span></div></div> <div class="defrow"><div class="k">Large<br/><span style="font-size:18px;color:var(--muted);font-style:normal;font-family:var(--font-body)">n &gt; 10</span></div><div class="vv"><b>Contiguous cut heuristic.</b> <span>Sort by covariance row sum, prefix sum once in O(n²), pick the best of n−1 cuts in a single pass.</span></div></div> </div> </div> <div class="stack anim d2" style="justify-content:center;"> <div class="stats"> <div class="stat hl"><div class="v">~50<span class="u">%</span></div><div class="l">of clusters is heuristic recovers the <span style="color:var(--red);font-size:inherit;font-family:inherit;font-style:normal;font-weight:600;">exact</span> partition</div></div> <div class="stat"><div class="v">O(<span style="font-family:var(--font-head),serif;font-style:italic">n</span>²)</div><div class="l">one prefix sum, then constant time cut scoring</div></div> </div> <p class="body soft" style="margin-top:30px;font-size:23px;">On the rest it stays close in objective value and validated against the exhaustive optimum in the appendix. Full pseudo code accompanies one rebalance date.</p> </div> </div> <div class="pgmark">Methods · 2.2</div> </section>  13 and PART III DIVIDER  <section class="s-div" data-label="Part III"> <div class="num">PART III</div> <h2 class="anim">Empirical results</h2> <div class="dsub anim d1">A fully point in time backtest of the top 100 S&amp;P 500 constituents, 2002-2024 and design, headline performance, inference, regimes, and robustness.</div> <div class="agenda anim d2"> <div class="dot">I · Introduction</div> <div class="dot">II · Methodology</div> <div class="dot on">III · Results</div> <div class="dot">IV · Conclusion</div> </div> </section>  14 and EMPIRICAL DESIGN + ABLATION  <section data-label="Empirical design"> <div class="head anim"> <div class="kicker">Empirical design · fair comparison</div> <h2>Identical inputs, point in time universe, best config per family</h2> </div> <div class="cols cols-5-7"> <div class="stack anim d1"> <div class="chips"> <div class="chip">CRSP daily · <b>2002-2024</b></div> <div class="chip">Top 100 S&amp;P 500, <b>point in time</b></div> <div class="chip">Monthly rebalance · <b>T<sub>r</sub>=21</b></div> <div class="chip">2 yr history · <b>T<sub>h</sub>=504</b></div> </div> <p class="body soft" style="margin-top:26px;font-size:23px;">Membership reconstructed from a historical constituents file and <b>no survivorship bias.</b> Each family is layered with the same estimators (E = EWMA, K = Kalman filter), then represented by its best configuration.</p> <p class="body" style="margin-top:22px;font-size:23px;">Benchmarks are MVO · GMV · HRP · EW · SPY 100.</p> </div> <div class="stack anim d2"> <div class="sharpe-panel"> <div class="tag" style="text-align:center;margin-bottom:0;">Within family Sharpe comparison</div> <div class="sharpe-row"><div class="sharpe-name">MVO-EK</div><div class="sharpe-track"><div class="sharpe-fill" style="width:72.5%;"></div></div><div class="sharpe-value">0.475</div></div> <div class="sharpe-row"><div class="sharpe-name">GMV-EK</div><div class="sharpe-track"><div class="sharpe-fill" style="width:100%;"></div></div><div class="sharpe-value">0.655</div></div> <div class="sharpe-row"><div class="sharpe-name">HRP-E</div><div class="sharpe-track"><div class="sharpe-fill" style="width:90.7%;"></div></div><div class="sharpe-value">0.594</div></div> <div class="mini-matrix"> <div class="headcell">Family</div><div class="headcell">Base</div><div class="headcell">With EWMA</div><div class="headcell">With added filter</div> <div class="headcell">MVO</div><div>0.084</div><div>0.323</div><div class="best">0.475</div> <div class="headcell">GMV</div><div>0.450</div><div>0.619</div><div class="best">0.655</div> <div class="headcell">HRP</div><div>0.564</div><div class="best">0.594</div><div>0.565</div> </div> <div class="tcap" style="text-align:center;margin-top:2px;">The best configuration from each family carries forward, so HMVA is compared against the strongest available benchmark.</div> </div> </div> </div> <div class="pgmark">Results · 3</div> </section>  15 and HEADLINE RESULTS  <section data-label="Headline results"> <div class="head anim"> <div class="kicker">Results · backtest</div> <h2>HMVA posts the highest Sharpe of any strategy</h2> </div> <div class="cols cols-7-5"> <div class="stack anim d1"> <table class="t"> <thead><tr><th>Strategy</th><th>Ann. Ret.</th><th>Vol.</th><th>Sharpe</th><th>Sortino</th><th>MaxDD</th></tr></thead> <tbody> <tr class="win"><td>HMVA</td><td>14.2%</td><td>17.8%</td><td>0.794</td><td>1.052</td><td>−36.7%</td></tr> <tr><td>GMV-EK</td><td>9.6%</td><td>14.6%</td><td>0.655</td><td>0.833</td><td>−36.2%</td></tr> <tr><td>HRP-E</td><td>9.3%</td><td>15.6%</td><td>0.594</td><td>0.741</td><td>−42.5%</td></tr> <tr><td>MVO-EK</td><td>11.1%</td><td>23.4%</td><td>0.475</td><td>0.605</td><td>−54.8%</td></tr> <tr class="muted"><td>SPY 100</td><td>9.5%</td><td>18.9%</td><td>0.503</td><td>0.635</td><td>−52.3%</td></tr> <tr class="muted"><td>EW</td><td>9.0%</td><td>18.8%</td><td>0.477</td><td>0.596</td><td>−55.2%</td></tr> </tbody> </table> <div class="tcap">Table 2 · Full sample, zero costs. Same ordering holds on Sortino and the edge is downside, not upside volatility.</div> </div> <div class="stack anim d2" style="gap:24px;"> <div class="callout"> <div class="big">+60<span class="u">%</span></div> <div class="tx">higher Sharpe than <b>MVO-EK</b> built from the <b>identical inputs</b> and and ≈18 pts shallower max drawdown than the passive benchmarks.</div> </div> </div> </div> <div class="pgmark">Results · 4.1</div> </section>  16 and STATISTICAL EVALUATION  <section data-label="Statistical eval"> <div class="head anim"> <div class="kicker">Results · inference</div> <h2>Directionally consistent and underpowered, not disproven</h2> </div> <div class="cols cols-2"> <div class="stack anim d1"> <p class="body soft">Sharpe differences are tested with the Ledoit &amp; Wolf (2008) circular block bootstrap (B = 10,000), which preserves serial dependence.</p> <table class="t" style="margin-top:24px;"> <thead><tr><th>HMVA vs.</th><th>SR diff</th><th>LW p value</th></tr></thead> <tbody> <tr><td>EW</td><td>+0.281</td><td>0.103</td></tr> <tr><td>MVO-EK</td><td>+0.264</td><td>0.153</td></tr> <tr><td>SPY 100</td><td>+0.257</td><td>0.140</td></tr> </tbody> </table> <div class="tcap"></div> </div> <div class="stack anim d2" style="justify-content:center;"> <div class="eqwrap" style="border-left-color:var(--slate);"> <div class="eqlabel">How to read this</div> <div class="body" style="font-size:25px;">A two decade, monthly rebalanced sample yields <b>few effectively independent observations.</b> Differences of this size sit right at the edge of what the horizon can resolve.</div> </div> <div class="callout" style="margin-top:26px;"> <div class="tx">What inference <b>can</b> establish is consistency of direction. The selected tests favour HMVA, while the sample horizon limits statistical power.</div> </div> </div> </div> <div class="pgmark">Results · 4.2</div> </section>  17 and REGIMES  <section data-label="Regimes"> <div class="head anim"> <div class="kicker">Results · across market regimes</div> <h2>The advantage is earned in crises</h2> </div> <div class="cols cols-7-5"> <div class="stack anim d1"> <table class="t"> <thead><tr><th>Mean Sharpe</th><th>Crisis (×4)</th><th>Calm (×3)</th></tr></thead> <tbody> <tr class="win"><td>HMVA</td><td>−0.040</td><td>1.362</td></tr> <tr><td>GMV-EK</td><td>−0.544</td><td>1.596</td></tr> <tr><td>HRP-E</td><td>−0.632</td><td>1.516</td></tr> <tr class="muted"><td>EW</td><td>−0.771</td><td>1.454</td></tr> <tr class="muted"><td>SPY 100</td><td>−0.773</td><td>1.420</td></tr> <tr><td>MVO-EK</td><td>−0.887</td><td>0.780</td></tr> </tbody> </table> <div class="tcap">Table 6 · Dot com, GFC, COVID 19, rate hikes (crisis) vs. three calm windows.</div> </div> <div class="stack anim d2" style="gap:22px;"> <div class="callout"> <div class="tx"><b>A clear asymmetry.</b> In crises HMVA records the <b>least negative</b> mean Sharpe of any strategy and in calm markets the field clusters together. The covariance minimising tree spreads capital across branches that co move little and <b>sacrificing little in benign markets, limiting the losses that dominate the long run record.</b></div> </div> </div> </div> <div class="pgmark">Results · 4.3</div> </section>  18 and ROBUSTNESS  <section data-label="Robustness"> <div class="head anim"> <div class="kicker">Results · robustness</div> <h2>The edge survives costs and lookback windows</h2> </div> <div class="cols" style="grid-template-columns:1fr;max-width:1050px;margin-left:auto;margin-right:auto;text-align:center;"> <div class="stack anim d1" style="justify-content:center;align-items:center;"> <div class="stats"> <div class="stat hl"><div class="v">100<span class="u">%</span></div><div class="l">of 18 cost and lookback cells beat equal weight</div></div> <div class="stat"><div class="v">+0.244</div><div class="l">mean Sharpe advantage over EW across the cost levels and estimation hist</div></div> </div> <p class="body soft" style="margin-top:28px;font-size:23px;">Estimation windows from 6 months to 2 years and proportional costs from 0 to 20 bps per unit of turnover. The advantage compresses as costs rise and but never changes sign.</p> </div> </div> <div class="pgmark">Results · 4.4</div> </section>  19 and PART IV DIVIDER  <section class="s-div" data-label="Part IV"> <div class="num">PART IV</div> <h2 class="anim">Conclusion</h2> <div class="dsub anim d1">What HMVA contributes, where the evidence is strong and where it is bounded, and what comes next.</div> <div class="agenda anim d2"> <div class="dot">I · Introduction</div> <div class="dot">II · Methodology</div> <div class="dot">III · Results</div> <div class="dot on">IV · Conclusion</div> </div> </section>  20 and CONCLUSION  <section data-label="Conclusion"> <div class="head anim" style="text-align:center;align-items:center;"> <div class="kicker">Conclusion</div> <h2>A noise robust route to mean variance, out of sample</h2> </div> <div class="cols" style="grid-template-columns:1fr 1fr;gap:70px;max-width:1280px;margin:0 auto;align-items:start;"> <div class="stack anim d1" style="align-items:center;text-align:left;"> <span class="tag">What it delivers</span> <div class="points"> <div class="pt"><div class="ix">✓</div><div class="tx"><b>Highest full sample Sharpe </b> <span>of seven strategies clearing the 1/N hurdle and beating MVO from identical inputs by ≈60%.</span></div></div> <div class="pt"><div class="ix">✓</div><div class="tx"><b>Better return per unit of risk</b> <span>with improved drawdown behavior rather than performance bought with tail risk.</span></div></div> <div class="pt"><div class="ix">✓</div><div class="tx"><b>Alpha localised to crises</b>, <span>robust across costs and lookbacks.</span></div></div> </div> </div> <div class="stack anim d2" style="align-items:center;text-align:left;"> <span class="tag">Limits and what comes next</span> <div class="points"><div class="pt"><div class="ix">✓</div><div class="tx"><b>One market and asset class</b><span> large cap US means the harder test is the full S&amp;P 500 at N/T ≈ 1.</span></div></div><div class="pt"><div class="ix">✓</div><div class="tx"><b>Statistical power remains limited</b><span> the two decade horizon supports direction and result suggestion, not formal significance.</span></div></div><div class="pt"><div class="ix">✓</div><div class="tx"><b>Next steps clarify the mechanism</b><span> study the tree, bisection, and filter components, then replace filter heuristics with a latent state model.</span></div></div></div> </div> </div> <div class="pgmark">§5</div> </section>  21 and THANK YOU  <section class="s-title" data-label="Thank you"> <div class="top"> <div class="crest"><b>University of Amsterdam</b><br/>Faculty of Economics &amp; Business</div> <div class="deg">Thesis Presentation<br/>June 2026</div> </div> <div> <div class="kicker" style="color:#E8889E;">Thank you</div> <h1 class="anim" style="font-size:104px;">Questions &amp;<br/>discussion</h1> <div class="redrule"></div> <div class="sub anim d1" style="font-style:normal;font-family:var(--font-body);font-weight:300;">Hierarchical Mean Variance Allocation</div> </div> <div class="byline"> <div class="who">Kiril Ivanov<span>Supervisor · Dr. Sander Barendse</span></div> <div class="meta">BSc Econometrics &amp; Data Science<br/>Student ID 15174433</div> </div> </section> </deck-stage> <script id="speaker-notes" type="application/json">
+[
+  "Good [morning/afternoon], and thank you for being here. My thesis asks a deceptively simple question: can we build a mean-variance portfolio that actually performs out-of-sample? The answer I'll defend is a new construction I call Hierarchical Mean Variance Allocation, or HMVA. I'll move through four parts - the problem and its literature, the method, the empirical results, and conclusions. Aim is about 15 minutes, then I'll take questions.",
+  "Part one: the problem, and the literature around it. Let me set up why this is hard before I show what I built.",
+  "This sits under the topic of optimal portfolios for a large universe of assets. The textbook answer is Markowitz: hold the portfolio that best trades risk against return. That requires two inputs - a return signal mu and a covariance matrix sigma - and the optimal weights are proportional to sigma-inverse times mu. The trouble is that both inputs are estimated and noisy, and then we invert one of them. Two issues: first, the return signal barely predicts - out-of-sample R-squared of even the best predictors is around one percent. Second, the covariance is hard to pin down when you have many assets. And inversion is the multiplier - it loads hardest on the smallest, least reliable eigenvalues. So my guiding question: can we target risk-adjusted return out-of-sample WITHOUT ever inverting an estimated covariance matrix?",
+  "The literature is remarkably consistent on the diagnosis. Random-matrix theory shows sample eigenvalues are systematically biased - exactly where the optimizer loads. Michaud names it 'optimization error maximization.' Chopra and Ziemba quantify that errors in the means hurt about ten times more than errors in covariances. And the benchmark that frames the whole field: DeMiguel and co-authors showed that across fourteen strategies and seven datasets, no sophisticated optimizer reliably beat the naive one-over-N portfolio. That one-over-N result is the hurdle any new method has to clear.",
+  "The responses split into two traditions. One fixes the inputs - shrink the covariance, à la Ledoit and Wolf and stabilise returns with Black-Litterman or momentum factors and or constrain the weights. The other re-designs the construction itself - most importantly López de Prado's Hierarchical Risk Parity, which clusters the correlation matrix and allocates risk through a tree, never inverting sigma. But here's the gap: HRP solved noise-robustness for RISK allocation. No construction had done the same for mean-variance - for risk-adjusted return - out of sample. Closing that gap is my contribution.",
+  "Part two: the methodology. I'll walk through the construction, the estimators that feed it, and how it's implemented.",
+  "HMVA makes one allocation decision in four stages, and critically it never inverts a matrix. Stage one: exponentially weight the return window and estimate mu-hat and sigma-hat. Stage two: build a top-down binary tree, splitting so the two branches co-move as little as possible. Stage three: allocate capital recursively in proportion to each branch's Sharpe proxy. Stage four: blend the new weights with the old through a Kalman-type filter. The tree imposes concentration limits without hard constraints, and because nothing is inverted, input noise can't blow up. Two variants come from one mechanism: full HMVA uses the return signal and HMVA falls back to inverse-variance only.",
+  "Stage two in detail. At each node I split the universe to minimise an equal blend of the covariance AND the correlation between the two branches - both computed from the equal-weighted sub-portfolios, not from the nearest asset pair as in standard HRP. Small covariance means little absolute co-movement and small correlation means little relative co-movement. The point is that I'm measuring diversification at exactly the level where capital actually gets allocated, so branches end up with predictable total risk.",
+  "Stage three: how capital flows. At each node, the left branch gets a share proportional to its cluster Sharpe proxy - equal-weight return divided by equal-weight volatility, floored at zero. The higher-Sharpe branch gets more capital. If neither branch has a positive signal, the node reverts to inverse-variance bisection - and if you force that everywhere, you get the minimum-variance variant HMVA. The key safeguard: the signal only ever tilts BETWEEN branches and it's never inverted onto individual weights, so a noisy mu-hat can't concentrate the book.",
+  "Stage four controls turnover. The final weights are a convex blend of new and old, with a Kalman-type gain K equal to Y over X-plus-Y. X is the spectral entropy of the covariance - how diffuse the risk structure is. Y is the relative change in the return estimate - how much the signal just moved. When the covariance is diffuse and the signal is stable, K goes to zero and the portfolio barely moves. When the signal shifts sharply, K approaches one and it updates aggressively. So we only spend turnover - and trading cost - when new information justifies it.",
+  "On estimation - and this matters for fairness. For covariance I use Ledoit-Wolf nonlinear shrinkage: keep the eigenvectors, shrink each eigenvalue toward its oracle value, undoing the eigenvalue dispersion. For returns I use a Black-Litterman posterior, blending a cross-sectional prior with a skip-a-month momentum view. The crucial point: EVERY competing strategy gets these same best-in-class inputs. So any performance difference is down to the construction mechanism, not to better data.",
+  "Briefly on implementation, because the split is the one step that can't scale - a cluster of size n has exponentially many bipartitions. I use a threshold of ten: small clusters get an exhaustive search that returns the global optimum and large clusters use a contiguous-cut heuristic - sort by covariance row-sum, build a prefix-sum once, and scan the n-minus-one cuts in a single pass. In validation the heuristic recovers the exact partition on roughly half of clusters and stays close on the rest.",
+  "Part three: the empirical results - design, headline performance, inference, regimes, and robustness.",
+  "The setup is deliberately demanding and fair. Daily CRSP data, 2002-2024, the top-100 S&P 500 constituents reconstructed point-in-time from a historical membership file - so no survivorship bias. Monthly rebalancing, two-year estimation history. Before comparing, I layer each competitor with the same components - exponential weighting, then the Kalman filter - and let each family put its best foot forward. Table 1 shows these ablations lift Sharpe across the board, so I carry forward MVO-EK, GMV-EK, and HRP-E. HMVA is therefore tested against each family's STRONGEST form, not a straw man.",
+  "Here's the headline. HMVA posts the highest Sharpe of any strategy at 0.794 - ahead of its own minimum-variance variant, GMV, HRP, MVO, and both passive benchmarks. The same ordering holds on Sortino, so this is downside quality, not upside volatility. Two numbers to anchor: about sixty percent higher Sharpe than MVO-EK built from identical inputs - which shows the inversion really is the problem - and a maximum drawdown roughly eighteen points shallower than the passive benchmarks. Higher return per unit of risk, and a smaller worst-case loss.",
+  "Now I want to be honest about inference. I test Sharpe differences with the Ledoit-Wolf circular block bootstrap. The selected Sharpe differences are positive for HMVA. The right reading is a power limitation: two decades of monthly returns just do not give you many independent observations, so differences of this size sit at the edge of what is resolvable. What the inference does establish is consistency of direction, with a genuine if modest edge that no single test is powered to certify alone.",
+  "The regime split tells you WHERE the edge comes from. I partition into four crises - dot-com, the GFC, COVID, and the 2022 rate-hikes - and three calm windows. In crises, HMVA has the least-negative mean Sharpe of any strategy, at basically minus-0.04 versus minus-0.77 for equal weight and minus-0.89 for MVO. In calm periods everyone clusters together. So the full-sample advantage is predominantly a crisis story: the covariance-minimising tree spreads capital across branches that co-move little, sacrificing almost nothing in good times while limiting the losses that dominate the long-run record.",
+  "Finally, robustness - to make sure this isn't an artefact of one window or a frictionless market. I sweep eighteen cells: estimation windows from six months to two years, and transaction costs from zero to twenty basis points per unit of turnover. HMVA beats equal weight in one hundred percent of cells, with a mean Sharpe advantage of about a quarter point. The edge compresses as costs rise - as you'd expect - but it never changes sign in the tested range.",
+  "Part four: conclusions.",
+  "To summarise. HMVA delivers the highest full-sample Sharpe of the seven strategies, clears the one-over-N hurdle, beats the classical optimizer from identical inputs by around sixty percent, and cuts the drawdown from roughly fifty-five to thirty-seven percent - with the alpha concentrated in crises and robust across costs and lookbacks. The honest limits: it's one market and asset class, large-cap US and the full S&P 500 at an asset-to-observation ratio near one is the harder test. Statistical power is bounded by the horizon - the evidence is directional, not certified. And natural next steps are a fuller ablation separating the tree, the bisection rule, and the filter, and replacing the filter heuristics with an explicit latent-state model. The contribution in one line: a stand-alone, noise-robust construction that brings HRP's out-of-sample discipline to risk-adjusted return - without ever inverting an estimated covariance matrix.",
+  "That's the work. Thank you for your attention - I'm happy to take your questions."
+]
+</script> <script>
+class DeckStage extends HTMLElement {
+  connectedCallback(){
+    this.slides = Array.from(this.querySelectorAll('section'));
+    this.index = 0;
+    this.w = Number(this.getAttribute('width')) || 1920;
+    this.h = Number(this.getAttribute('height')) || 1080;
+    this.style.display = 'block';
+    this.style.position = 'relative';
+    this.style.width = '100vw';
+    this.style.height = '100vh';
+    this.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    this.slides.forEach((s,i)=>{
+      s.style.width = this.w+'px'; s.style.height = this.h+'px';
+      s.style.position = 'absolute'; s.style.left='0'; s.style.top='0';
+      s.style.transformOrigin = 'top left';
+      s.style.transition = 'opacity .18s ease';
+    });
+    this.controls = document.createElement('div');
+    this.controls.className = 'present-controls';
+    this.controls.innerHTML = '<button data-prev>‹</button><span class="count"></span><button data-next>›</button>';
+    document.body.appendChild(this.controls);
+    this.help = document.createElement('div');
+    this.help.className = 'present-help';
+    this.help.textContent = 'Use ← / → or Space to navigate. Press F for fullscreen.';
+    document.body.appendChild(this.help);
+    this.controls.querySelector('[data-prev]').onclick = ()=>this.go(this.index-1);
+    this.controls.querySelector('[data-next]').onclick = ()=>this.go(this.index+1);
+    window.addEventListener('keydown', e=>{
+      if(['ArrowRight',' ','PageDown'].includes(e.key)){e.preventDefault();this.go(this.index+1)}
+      if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();this.go(this.index-1)}
+      if(e.key.toLowerCase()==='f'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen?.()}
+      if(e.key==='Home'){this.go(0)}
+      if(e.key==='End'){this.go(this.slides.length-1)}
+    });
+    window.addEventListener('resize', ()=>this.layout());
+    this.layout(); this.go(0);
+  }
+  layout(){
+    const scale = Math.min(window.innerWidth/this.w, window.innerHeight/this.h);
+    const x = (window.innerWidth - this.w*scale)/2;
+    const y = (window.innerHeight - this.h*scale)/2;
+    this.slides.forEach(s=>{s.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;});
+  }
+  go(i){
+    this.index = Math.max(0, Math.min(this.slides.length-1, i));
+    this.slides.forEach((s,j)=>{s.style.opacity = j===this.index?'1':'0'; s.style.pointerEvents = j===this.index?'auto':'none'; s.style.zIndex = j===this.index?'2':'1';});
+    this.controls.querySelector('.count').textContent = `${this.index+1} / ${this.slides.length}`;
+    location.hash = `slide-${this.index+1}`;
+  }
+}
+customElements.define('deck-stage', DeckStage);
+</script> </body> </html> 
