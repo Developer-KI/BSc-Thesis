@@ -17,7 +17,7 @@ DATA_CSV = "./data/stock_daily_returns.csv"
 CONSTITUENTS_CSV = "./data/constiuents.csv"
 PERMNO_LIST_TXT = "./data/unique_ids.txt"
 
-SUBFOLDER_OUTPUT = "base"
+SUBFOLDER_OUTPUT = "var-passive"
 
 PERMNO_COL = "PERMNO"
 DATE_COL = "DlyCalDt"
@@ -28,7 +28,7 @@ START_DATE = "2000-01-01"
 END_DATE = "2025-01-01"
 TOP_K = 100
 
-LOOKBACK = 504
+LOOKBACK = 126
 REBALANCE = 21
 
 RISK_FREE_BPS = 0.00
@@ -107,44 +107,52 @@ def main(argv: List[str] = None) -> None:
     print("\n=== Performance summary ===")
     print(metrics.round(4).to_string())
     metrics.to_csv(f"{outdir}/metrics.csv")
+    
+    if "mean" in SUBFOLDER_OUTPUT:
+        print("\n=== Tests HMVA vs others (excl. HMVA-mv) ===")
+        base_hmva = daily["HMVA"]
+        rows = []
+        for s in daily.columns:
+            if s in ("HMVA", "HMVA-mv"):
+                continue
+            lw_diff, lw_p, ci_lo, ci_hi = L.lw_sharpe_test(base_hmva, daily[s], n_boot=2000, block=21)
+            rows.append({
+                "Strategy":    s,
+                "Sharpe_diff": lw_diff,
+                "CI_lo_95":    ci_lo,
+                "CI_hi_95":    ci_hi,
+                "LW_p":        lw_p,
+            })
+        test_df = pd.DataFrame(rows).set_index("Strategy")
+        bh_lw = L.benjamini_hochberg(test_df["LW_p"].to_dict())
+        test_df["LW_p_adj"]  = bh_lw["pval_adj"]
+        test_df["LW_reject"] = bh_lw["reject"]
+        test_df = test_df.reset_index()
+        print(test_df.round(4).to_string(index=False))
+        test_df.to_csv(f"{outdir}/statistical_tests_hmva.csv", index=False)
 
-    print("\n=== Tests HMVA vs others (excl. HMVA-mv) ===")
-    base_hmva = daily["HMVA"]
-    rows = []
-    for s in daily.columns:
-        if s in ("HMVA", "HMVA-mv"):
-            continue
-        lw_diff, lw_p = L.lw_sharpe_test(base_hmva, daily[s], n_boot=2000, block=21)
-        dm_stat, dm_p  = L.diebold_mariano(base_hmva, daily[s], h=21)
-        rows.append({
-            "Strategy":    s,
-            "Sharpe_diff": lw_diff,
-            "LW_p":        lw_p,
-            "DM_stat":     dm_stat,
-            "DM_p":        dm_p,
-        })
-    test_df = pd.DataFrame(rows)
-    print(test_df.round(4).to_string(index=False))
-    test_df.to_csv(f"{outdir}/statistical_tests_hmva.csv", index=False)
-
-    print("\n=== Tests HMVA-mv vs others (excl. HMVA) ===")
-    base_mv = daily["HMVA-mv"]
-    rows = []
-    for s in daily.columns:
-        if s in ("HMVA-mv", "HMVA"):
-            continue
-        lw_diff, lw_p = L.lw_sharpe_test(base_mv, daily[s], n_boot=2000, block=21)
-        dm_stat, dm_p  = L.diebold_mariano(base_mv, daily[s], h=21)
-        rows.append({
-            "Strategy":    s,
-            "Sharpe_diff": lw_diff,
-            "LW_p":        lw_p,
-            "DM_stat":     dm_stat,
-            "DM_p":        dm_p,
-        })
-    test_mv_df = pd.DataFrame(rows)
-    print(test_mv_df.round(4).to_string(index=False))
-    test_mv_df.to_csv(f"{outdir}/statistical_tests_hmva_mv.csv", index=False)
+    if "var" in SUBFOLDER_OUTPUT:
+        print("\n=== Tests HMVA-mv vs others (excl. HMVA) ===")
+        base_mv = daily["HMVA-mv"]
+        rows = []
+        for s in daily.columns:
+            if s in ("HMVA-mv", "HMVA"):
+                continue
+            lw_diff, lw_p, ci_lo, ci_hi = L.lw_sharpe_test(base_mv, daily[s], n_boot=2000, block=21)
+            rows.append({
+                "Strategy":    s,
+                "Sharpe_diff": lw_diff,
+                "CI_lo_95":    ci_lo,
+                "CI_hi_95":    ci_hi,
+                "LW_p":        lw_p,
+            })
+        test_mv_df = pd.DataFrame(rows).set_index("Strategy")
+        bh_lw_mv = L.benjamini_hochberg(test_mv_df["LW_p"].to_dict())
+        test_mv_df["LW_p_adj"]  = bh_lw_mv["pval_adj"]
+        test_mv_df["LW_reject"] = bh_lw_mv["reject"]
+        test_mv_df = test_mv_df.reset_index()
+        print(test_mv_df.round(4).to_string(index=False))
+        test_mv_df.to_csv(f"{outdir}/statistical_tests_hmva_mv.csv", index=False)
 
     L.plot_backtest_results(daily, weights, metrics, outdir)
 

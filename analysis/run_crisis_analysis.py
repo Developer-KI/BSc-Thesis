@@ -12,6 +12,7 @@ import matplotlib.ticker as mtick
 import matplotlib.dates as mdates
 from matplotlib.colors import TwoSlopeNorm
 import utils.plotting as _plt
+import utils.backtest as L
 
 _PALETTE = _plt._PALETTE
 
@@ -25,20 +26,26 @@ STRATEGIES = ["HMVA", "HMVA-mv", "HRP-E", "MHRP-EK", "MVO-EK", "GMV-EK", "EW", "
 
 CRISIS_PERIODS: Dict[str, Tuple[str, str]] = {
     "Dot-com":               ("2002-01-01", "2002-10-31"),
-    "GFC":                           ("2007-10-01", "2009-03-31"),
-    "COVID-19":    ("2020-01-15", "2020-04-30"),
-    "Rate-hikes":      ("2022-01-01", "2022-12-31"),
+    "GFC":                   ("2007-10-01", "2009-03-31"),
+    "COVID-19":              ("2020-01-15", "2020-04-30"),
+    "Rate-hikes":            ("2022-01-01", "2022-12-31"),
 }
 
-CALM_PERIODS: Dict[str, Tuple[str, str]] = {
-    "Pre-GFC":     ("2003-01-01", "2007-09-30"),
-    "Post-GFC":    ("2009-04-01", "2020-01-14"),
-    "Post-COVID": ("2020-05-01", "2021-12-31"),
-}
+def _calm_daily(daily: pd.DataFrame) -> pd.DataFrame:
+    """Return daily rows that fall outside every crisis period."""
+    mask = pd.Series(True, index=daily.index)
+    for s, e in CRISIS_PERIODS.values():
+        mask.loc[s:e] = False
+    return daily[mask]
+
+
+def _calm_periods_label(index: pd.DatetimeIndex) -> Dict[str, Tuple[str, str]]:
+    """Single 'Calm' entry spanning the full data range (rows filtered via _calm_daily)."""
+    return {"Calm": (index.min().strftime("%Y-%m-%d"), index.max().strftime("%Y-%m-%d"))}
 
 _CRISIS_SHADE = "#fce4e4"
 
-_ROLLING_WINDOW = 252
+_ROLLING_WINDOW = 126
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -85,6 +92,139 @@ def _load_daily(results_dir: str) -> pd.DataFrame:
     return daily[present]
 
 
+# ── statistical tests per subperiod ──────────────────────────────────────────
+
+_TEST_BASES = ("HMVA",)
+
+
+def _period_sharpe_tests(
+    daily: pd.DataFrame,
+    calm_periods: Dict[str, Tuple[str, str]],
+    n_boot: int = 5000,
+) -> pd.DataFrame:
+    """
+    Run LW block-bootstrap Sharpe tests for each pre-specified subperiod.
+
+    For each period in CRISIS_PERIODS + calm_periods and each baseline in
+    _TEST_BASES, test H0: SR(base) = SR(other) for every competing strategy.
+    BH FDR correction is applied within each (period, base) group.
+
+    Returns a DataFrame with columns:
+        period, regime, base, strategy,
+        Sharpe_base, Sharpe_other, Sharpe_diff,
+        CI_lo_95, CI_hi_95, LW_p, LW_p_adj, LW_reject
+    """
+    def _sr_ann(r: pd.Series) -> float:
+        r = r.dropna()
+        if len(r) < 2:
+            return float("nan")
+        ann_ret = float((1 + r).prod() ** (252.0 / len(r)) - 1)
+        ann_vol = float(r.std(ddof=1) * np.sqrt(252))
+        return ann_ret / ann_vol if ann_vol > 0 else float("nan")
+
+    cd = _calm_daily(daily)
+    all_periods: Dict[str, Tuple[str, str]] = {**CRISIS_PERIODS, **calm_periods}
+    rows = []
+
+    # build combined crisis sub-DataFrame upfront for the "All Crisis" entry
+    crisis_chunks = [
+        daily.loc[s:e].dropna(how="all")
+        for _, (s, e) in CRISIS_PERIODS.items()
+    ]
+    combined_crisis = pd.concat([c for c in crisis_chunks if not c.empty]).sort_index()
+
+    for label, (s, e) in all_periods.items():
+        regime = "crisis" if label in CRISIS_PERIODS else "calm"
+        if regime == "crisis":
+            continue
+        source = cd
+        sub = source.loc[s:e].dropna(how="all")
+        if len(sub) < 10:
+            continue
+        # adaptive block size: at least 5, at most 21, ~1/10 of period
+        block = max(5, min(21, len(sub) // 10))
+
+        for base in _TEST_BASES:
+            if base not in sub.columns:
+                continue
+            r_base = sub[base].dropna()
+            sr_base = _sr_ann(r_base)
+            group_rows = []
+            for other in sub.columns:
+                if other == base:
+                    continue
+                r_other = sub[other].dropna()
+                if len(r_other) < 10:
+                    continue
+                diff, p, ci_lo, ci_hi = L.lw_sharpe_test(
+                    r_base, r_other, n_boot=n_boot, block=block
+                )
+                group_rows.append({
+                    "period":       label.replace("\n", " "),
+                    "regime":       regime,
+                    "base":         base,
+                    "strategy":     other,
+                    "Sharpe_base":  sr_base,
+                    "Sharpe_other": _sr_ann(r_other),
+                    "Sharpe_diff":  diff,
+                    "CI_lo_95":     ci_lo,
+                    "CI_hi_95":     ci_hi,
+                    "LW_p":         p,
+                })
+
+            if not group_rows:
+                continue
+
+            bh = L.benjamini_hochberg(
+                {r["strategy"]: r["LW_p"] for r in group_rows}
+            )
+            for r in group_rows:
+                r["LW_p_adj"]  = float(bh.loc[r["strategy"], "pval_adj"])
+                r["LW_reject"] = bool(bh.loc[r["strategy"], "reject"])
+            rows.extend(group_rows)
+
+    # ── combined "All Crisis" period ──────────────────────────────────────────
+    if len(combined_crisis) >= 10:
+        block = max(5, min(21, len(combined_crisis) // 10))
+        for base in _TEST_BASES:
+            if base not in combined_crisis.columns:
+                continue
+            r_base = combined_crisis[base].dropna()
+            sr_base = _sr_ann(r_base)
+            group_rows = []
+            for other in combined_crisis.columns:
+                if other == base:
+                    continue
+                r_other = combined_crisis[other].dropna()
+                if len(r_other) < 10:
+                    continue
+                diff, p, ci_lo, ci_hi = L.lw_sharpe_test(
+                    r_base, r_other, n_boot=n_boot, block=block
+                )
+                group_rows.append({
+                    "period":       "Crisis",
+                    "regime":       "crisis",
+                    "base":         base,
+                    "strategy":     other,
+                    "Sharpe_base":  sr_base,
+                    "Sharpe_other": _sr_ann(r_other),
+                    "Sharpe_diff":  diff,
+                    "CI_lo_95":     ci_lo,
+                    "CI_hi_95":     ci_hi,
+                    "LW_p":         p,
+                })
+            if group_rows:
+                bh = L.benjamini_hochberg(
+                    {r["strategy"]: r["LW_p"] for r in group_rows}
+                )
+                for r in group_rows:
+                    r["LW_p_adj"]  = float(bh.loc[r["strategy"], "pval_adj"])
+                    r["LW_reject"] = bool(bh.loc[r["strategy"], "reject"])
+                rows.extend(group_rows)
+
+    return pd.DataFrame(rows)
+
+
 # ── plots ─────────────────────────────────────────────────────────────────────
 
 def _rolling_sharpe(daily: pd.DataFrame, window: int = _ROLLING_WINDOW) -> pd.DataFrame:
@@ -121,10 +261,7 @@ def plot_rolling_sharpe_full(daily: pd.DataFrame, outdir: str) -> None:
     rs = _rolling_sharpe(daily)
     fig, ax = plt.subplots(figsize=(14, 5))
 
-    first_valid = rs.dropna(how="all").index[0]
     for label, (s, e) in CRISIS_PERIODS.items():
-        if pd.Timestamp(s) < first_valid:
-            continue
         ax.axvspan(pd.Timestamp(s), pd.Timestamp(e), color=_CRISIS_SHADE, alpha=0.55, zorder=0)
 
     _draw_rolling_sharpe_lines(ax, rs, daily.columns)
@@ -144,8 +281,6 @@ def plot_rolling_sharpe_full(daily: pd.DataFrame, outdir: str) -> None:
     ax.set_ylim(ax.get_ylim())  # freeze limits before re-annotating
     ybot = ax.get_ylim()[0]
     for label, (s, e) in CRISIS_PERIODS.items():
-        if pd.Timestamp(s) < first_valid:
-            continue
         ts, te = pd.Timestamp(s), pd.Timestamp(e)
         mid = ts + (te - ts) / 2
         ax.text(mid, ybot, label.replace("\n", "\n"),
@@ -190,10 +325,11 @@ def plot_crisis_equity(daily: pd.DataFrame, outdir: str) -> None:
     plt.close(fig)
 
 
-def plot_period_sharpe_heatmap(all_metrics: pd.DataFrame, outdir: str) -> None:
+def plot_period_sharpe_heatmap(all_metrics: pd.DataFrame, outdir: str,
+                               calm_periods: Dict[str, Tuple[str, str]]) -> None:
     pivot = all_metrics.pivot(index="period", columns="strategy", values="Sharpe")
     crisis_names = [k.replace("\n", " ") for k in CRISIS_PERIODS]
-    calm_names   = [k.replace("\n", " ") for k in CALM_PERIODS]
+    calm_names   = [k.replace("\n", " ") for k in calm_periods]
     row_order    = crisis_names + calm_names
     pivot = pivot.reindex([r for r in row_order if r in pivot.index])
     col_order = [c for c in STRATEGIES if c in pivot.columns]
@@ -222,6 +358,39 @@ def plot_period_sharpe_heatmap(all_metrics: pd.DataFrame, outdir: str) -> None:
     ax.set_title("Sharpe ratio by market regime and strategy", fontsize=12)
     fig.tight_layout()
     fig.savefig(f"{outdir}/period_sharpe_heatmap.png", bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_crisis_rolling_sharpe(daily: pd.DataFrame, outdir: str) -> None:
+    rs = _rolling_sharpe(daily)
+    periods = list(CRISIS_PERIODS.items())
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    fig.suptitle(f"Rolling {_ROLLING_WINDOW}-day Sharpe during crisis periods", fontsize=13)
+    for ax, (label, (s, e)) in zip(axes.flat, periods):
+        sub = rs.loc[s:e].dropna(how="all")
+        if sub.empty:
+            ax.set_visible(False)
+            continue
+        others = [c for c in sub.columns if c not in _FOCUS]
+        focus  = [c for c in sub.columns if c in _FOCUS]
+        for col in others:
+            ax.plot(sub.index, sub[col], color=_col_color(col, daily.columns),
+                    lw=1.0, alpha=0.45, label=col)
+        for col in focus:
+            ax.plot(sub.index, sub[col], color=_col_color(col, daily.columns),
+                    lw=2.4, alpha=1.0, label=col, zorder=5)
+        ax.axhline(0,  color="black", lw=0.8, ls="-")
+        ax.axhline(1,  color="grey",  lw=0.7, ls="--", alpha=0.6)
+        ax.axhline(-1, color="grey",  lw=0.7, ls="--", alpha=0.6)
+        ax.set_title(label.replace("\n", "  "), fontsize=10)
+        ax.set_ylabel("Rolling Sharpe")
+        locator = mdates.AutoDateLocator(minticks=4, maxticks=7)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        ax.tick_params(axis="x", rotation=30)
+        ax.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(f"{outdir}/crisis_rolling_sharpe.png", bbox_inches="tight")
     plt.close(fig)
 
 
@@ -272,12 +441,15 @@ def main(argv=None):
     print(f"[crisis] period: {daily.index[0].date()} → {daily.index[-1].date()}")
 
     # ── compute metrics per period ────────────────────────────────────────────
+    calm_periods = _calm_periods_label(daily.index)
+    cd = _calm_daily(daily)
     all_rows = []
-    all_periods: Dict[str, Tuple[str, str]] = {**CRISIS_PERIODS, **CALM_PERIODS}
+    all_periods: Dict[str, Tuple[str, str]] = {**CRISIS_PERIODS, **calm_periods}
 
     for label, (s, e) in all_periods.items():
         regime = "crisis" if label in CRISIS_PERIODS else "calm"
-        m = _compute_period_metrics(daily, s, e)
+        source = daily if regime == "crisis" else cd
+        m = _compute_period_metrics(source, s, e)
         for strat in m.index:
             row = {"period": label.replace("\n", " "), "regime": regime,
                    "strategy": strat, "start": s, "end": e}
@@ -318,11 +490,26 @@ def main(argv=None):
     )
     print(pivot_sharpe.round(3).to_string())
 
+    # ── subperiod statistical tests ───────────────────────────────────────────
+    print("\n[crisis] running subperiod Sharpe tests ...")
+    test_df = _period_sharpe_tests(daily, calm_periods)
+    test_df.to_csv(f"{args.out}/subperiod_sharpe_tests.csv", index=False)
+
+    for base in _TEST_BASES:
+        sub = test_df[test_df["base"] == base]
+        if sub.empty:
+            continue
+        print(f"\n=== Subperiod LW Sharpe tests — base: {base} ===")
+        print(sub[["period", "strategy", "Sharpe_base", "Sharpe_other",
+                   "Sharpe_diff", "CI_lo_95", "CI_hi_95",
+                   "LW_p", "LW_p_adj", "LW_reject"]].round(4).to_string(index=False))
+
     # ── generate plots ────────────────────────────────────────────────────────
     print("\n[crisis] generating plots ...")
     plot_crisis_equity(daily, args.out)
+    plot_crisis_rolling_sharpe(daily, args.out)
     plot_rolling_sharpe_full(daily, args.out)
-    plot_period_sharpe_heatmap(period_metrics, args.out)
+    plot_period_sharpe_heatmap(period_metrics, args.out, calm_periods)
     plot_annual_returns(daily, args.out)
 
     print(f"\n[crisis] done → {args.out}/")

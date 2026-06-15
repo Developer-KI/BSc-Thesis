@@ -20,13 +20,12 @@ import utils.backtest as L
 
 def _eval_split_cost(cov: np.ndarray, A: List[int], B: List[int]) -> float:
     """Evaluate _vb_merge_cost for an arbitrary (A, B) partition."""
-    nA, nB = len(A), len(B)
-    if nA == 0 or nB == 0:
+    if len(A) == 0 or len(B) == 0:
         return np.inf
     sA    = float(cov[np.ix_(A, A)].sum())
     sB    = float(cov[np.ix_(B, B)].sum())
     cross = float(cov[np.ix_(A, B)].sum())
-    return L._vb_merge_cost(cross, nA, nB, sA, sB)
+    return L._vb_merge_cost(cross, sA, sB)
 
 
 def _random_factor_cov(n: int, rng: np.random.Generator) -> np.ndarray:
@@ -165,7 +164,7 @@ def main() -> None:
     OUTDIR        = Path(__file__).resolve().parent.parent / "results" / "split_comparison"
 
     print("=== HMVA heuristic vs. brute-force split comparison ===")
-    print(f"  objective      : Cov(EW_A,EW_B) + Corr(EW_A,EW_B)")
+    print(f"  objective      : Corr(EW_A,EW_B)")
     print(f"  cluster sizes  : {CLUSTER_SIZES}")
     print(f"  reps per size  : {N_REPS}")
     print()

@@ -435,23 +435,18 @@ def make_spyk_allocator(cap_wide: pd.DataFrame) -> Callable:
 # HMVA
 # =============================================================================
 
-def _vb_merge_cost(cross: float, n_a: int, n_b: int,
-                   sw_a: float, sw_b: float) -> float:
+def _vb_merge_cost(cross: float, sw_a: float, sw_b: float) -> float:
     """
-    Equal-weight blend of inter-cluster covariance and correlation:
+    Inter-cluster correlation between equal-weighted sub-portfolios:
 
-        0.5 * Cov(EW_A, EW_B) + 0.5 * rho(EW_A, EW_B)
+        rho(EW_A, EW_B) = cross / sqrt(sw_A * sw_B)
 
     where
-        Cov(EW_A, EW_B) = cross / (n_A * n_B)
-        rho(EW_A, EW_B) = cross / sqrt(sw_A * sw_B)
-        cross            = Σ_{i∈A, j∈B} Σ_ij  (one-way sum)
-        sw_S             = Σ_{i,j∈S} Σ_ij = (n_S * Vol(EW_S))²
+        cross = Σ_{i∈A, j∈B} Σ_ij  (one-way sum)
+        sw_S  = Σ_{i,j∈S} Σ_ij = (n_S * Vol(EW_S))²
     """
-    cov_term  = cross / float(n_a * n_b) if n_a * n_b > 0 else 0.0
     denom_rho = float(np.sqrt(max(sw_a * sw_b, 0.0)))
-    rho       = cross / denom_rho if denom_rho > 1e-12 else 0.0
-    return 0.5 * cov_term + 0.5 * rho
+    return cross / denom_rho if denom_rho > 1e-12 else 0.0
 
 
 def _vb_split_bruteforce(cov_arr: np.ndarray,
@@ -474,11 +469,10 @@ def _vb_split_bruteforce(cov_arr: np.ndarray,
         for A_tup in combinations(local, r):
             A_loc = list(A_tup)
             B_loc = [i for i in local if i not in set(A_tup)]
-            nA, nB  = len(A_loc), len(B_loc)
             sA      = float(M[np.ix_(A_loc, A_loc)].sum())
             sB      = float(M[np.ix_(B_loc, B_loc)].sum())
             cross   = float(M[np.ix_(A_loc, B_loc)].sum())
-            score   = _vb_merge_cost(cross, nA, nB, sA, sB)
+            score   = _vb_merge_cost(cross, sA, sB)
             if score < best_score:
                 best_score = score
                 best_A, best_B = A_loc, B_loc
@@ -500,9 +494,7 @@ def _vb_split_heuristic(cov_arr: np.ndarray,
         s_left(k)  =  P[k-1, k-1]                       within-left sum
         s_right(k) =  total - P[n-1,k-1] - P[k-1,n-1] + P[k-1,k-1]
 
-        Cov term   =  cross / (k * (n-k))
-        rho term   =  cross / sqrt(s_left * s_right)
-        objective  =  0.5 * Cov + 0.5 * rho
+        objective  =  rho = cross / sqrt(s_left * s_right)
 
     All n-1 cuts are scored in O(n) after the O(n²) matrix extraction.
     """
@@ -522,10 +514,8 @@ def _vb_split_heuristic(cov_arr: np.ndarray,
     s_right = total - P[-1, ks - 1] - P[ks - 1, -1] + s_left
     cross   = P[ks - 1, -1] - P[ks - 1, ks - 1]      # one-way cross sum
 
-    cov_term  = cross / (ks * (n - ks))
     denom_rho = np.sqrt(np.maximum(s_left * s_right, 0.0))
-    rho       = np.where(denom_rho > 1e-12, cross / denom_rho, 0.0)
-    objective = 0.5 * cov_term + 0.5 * rho
+    objective = np.where(denom_rho > 1e-12, cross / denom_rho, 0.0)
 
     k = int(np.argmin(objective)) + 1
     return sorted_idx[:k], sorted_idx[k:]
@@ -666,7 +656,7 @@ def vol_bl_strategy(
     cov_fn: Callable,
     bf_threshold: int = 10,
     bisect_method: str = "sharpe",
-    ewma_halflife: float = 21,
+    ewma_halflife: Optional[float] = 21,
     kf_tp: bool = True,
 ) -> Tuple[Callable, Callable]:
     """
@@ -688,7 +678,8 @@ def vol_bl_strategy(
     kf_cache: Dict[str, Optional[np.ndarray]] = {"mu_prev": None}
 
     def _cov_fn(window: np.ndarray) -> np.ndarray:
-        window = _ewma_pseudo(window, halflife=ewma_halflife)
+        if ewma_halflife is not None:
+            window = _ewma_pseudo(window, halflife=ewma_halflife)
         cov = cov_fn(window)
         cache["window"] = window
         return cov
@@ -810,24 +801,28 @@ def backtest(returns: pd.DataFrame,
 # Commented lines are for full runs to compare ablation of exp weights and filtering
 def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> StrategyMap:
     strategies: StrategyMap = {
-        "HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe", kf_tp=True, ewma_halflife=21),
+        #"HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe", kf_tp=True, ewma_halflife=21),
         "HMVA-mv":  vol_bl_strategy(cov_nonlinear_shrink, bisect_method="vol", kf_tp=True, ewma_halflife=21),
-        # Best MVO is EXP weights, KF
-        "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
-        # "MVO-E":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
-        # "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
-        # Best MHRP is EXp weights, KF
-        "MHRP-EK":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=21),
-        #"MHRP":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=None),
+        # Best MVO is EXP weights, with KF
+        #"MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
+        #"MVO-K":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=None),
+        #"MVO-E":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
+        #"MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
+        # Best MHRP is EXp weights, with KF
+        #"MHRP-EK":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=21),
+        #"MHRP-K":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=None),
         #"MHRP-E":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=21),
-        # Best GMV is EXP weights, KF
-        "GMV-EK":      min_var_strategy(cov_ewa_nls, kf_tp=True),
-        # "GMV-E":      min_var_strategy(cov_ewa_nls, kf_tp=False),
-        # "GMV-EK":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
+        #"MHRP":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=None),
+        # Best GMV is EXP weights, with KF
+        #"GMV-EK":      min_var_strategy(cov_ewa_nls, kf_tp=True),
+        #"GMV-K":      min_var_strategy(cov_nonlinear_shrink, kf_tp=True),
+        #"GMV-E":      min_var_strategy(cov_ewa_nls, kf_tp=False),
+        #"GMV":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
         # Best HRP is EXP weights, no KF
-        "HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
-        # "HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
-        # "HRP-EK":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
+        #"HRP-EK":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=True),
+        #"HRP-K":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True),
+        #"HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
+        #"HRP":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
         "EW":       (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
@@ -1081,54 +1076,276 @@ def compute_metrics_pit(daily_returns: pd.DataFrame,
 # Statistical Tests
 # =============================================================================
 
-def diebold_mariano(d1: pd.Series, d2: pd.Series,
-                    h: int = 1) -> Tuple[float, float]:
-    """Paired DM test on negative-return loss with Newey-West variance."""
-    loss1, loss2 = -d1, -d2
-    d = (loss1 - loss2).dropna().values
-    n = len(d)
-    g0 = np.var(d, ddof=1)
-    var_d = g0
-    for k in range(1, max(1, h)):
-        gk = np.cov(d[k:], d[:-k], ddof=1)[0, 1]
-        var_d += 2.0 * (1.0 - k / h) * gk
-    var_d = max(var_d, 1e-12)
-    dm_stat = d.mean() / np.sqrt(var_d / n)
-    pval = 2.0 * (1.0 - norm.cdf(abs(dm_stat)))
-    return dm_stat, pval
 
-
-def lw_sharpe_test(r1: pd.Series, r2: pd.Series,
-                   n_boot: int = 10_000, block: int = 21,
-                   seed: int = 42) -> Tuple[float, float]:
+def lw_sharpe_test(
+    r1: pd.Series,
+    r2: pd.Series,
+    n_boot: int = 10_000,
+    block: int = 21,
+    seed: int = 42,
+    conf: float = 0.95,
+    annualization: int = 252,
+    hac_lags: int | None = None,
+) -> Tuple[float, float, float, float]:
     """
-    Block-bootstrap test in the spirit of Ledoit & Wolf (2008) for
-    H0: SR(r1) = SR(r2).
+    Ledoit-Wolf-style Sharpe-ratio difference test.
 
-    We use a circular block bootstrap and base the p-value on the centred
-    bootstrap distribution of the Sharpe-ratio difference.  This is the
-    practical version recommended by LW2008 when the analytical HAC SE is
-    awkward; it preserves serial dependence in the joint return process.
+    Implements the main recommendation of Ledoit and Wolf (2008):
+    construct a studentized time-series bootstrap confidence interval
+    for the difference in Sharpe ratios and reject equality if zero is
+    outside the interval.
+
+    Test:
+        H0: SR(r1) - SR(r2) = 0
+
+    Returns
+    -------
+    obs   : observed annualised Sharpe-ratio difference
+    p     : two-sided studentized bootstrap p-value
+    ci_lo : lower studentized bootstrap confidence bound
+    ci_hi : upper studentized bootstrap confidence bound
     """
     rng = np.random.default_rng(seed)
-    R = pd.concat([r1, r2], axis=1).dropna().values
+
+    R = pd.concat([r1, r2], axis=1).dropna().astype(float).values
     n = len(R)
 
-    def sr_diff(x):
-        s1 = x[:, 0].mean() / x[:, 0].std(ddof=1) * np.sqrt(252) if x[:, 0].std(ddof=1) > 0 else 0.0
-        s2 = x[:, 1].mean() / x[:, 1].std(ddof=1) * np.sqrt(252) if x[:, 1].std(ddof=1) > 0 else 0.0
-        return s1 - s2
+    if n < 10:
+        raise ValueError("Too few paired observations for a Sharpe-ratio test.")
 
-    obs = sr_diff(R)
-    n_blocks = n // block + 1
-    boot = np.empty(n_boot)
+    block = min(block, n)
+
+    if hac_lags is None:
+        # Natural choice when block length is one rebalance interval.
+        hac_lags = max(block - 1, 0)
+
+    def sharpe_diff(x: np.ndarray) -> float:
+        x1 = x[:, 0]
+        x2 = x[:, 1]
+
+        sd1 = x1.std(ddof=1)
+        sd2 = x2.std(ddof=1)
+
+        if sd1 <= 0 or sd2 <= 0:
+            return np.nan
+
+        sr1 = x1.mean() / sd1
+        sr2 = x2.mean() / sd2
+
+        return float((sr1 - sr2) * np.sqrt(annualization))
+
+    def hac_lrv(z: np.ndarray, lags: int) -> np.ndarray:
+        """
+        Newey-West / Bartlett long-run covariance estimator
+        for the mean of moment vector z.
+        """
+        z = np.asarray(z, dtype=float)
+        t, k = z.shape
+
+        zc = z - z.mean(axis=0, keepdims=True)
+
+        gamma0 = (zc.T @ zc) / t
+        lrv = gamma0.copy()
+
+        max_lag = min(lags, t - 1)
+
+        for ell in range(1, max_lag + 1):
+            weight = 1.0 - ell / (max_lag + 1.0)
+            gamma = (zc[ell:].T @ zc[:-ell]) / t
+            lrv += weight * (gamma + gamma.T)
+
+        return lrv
+
+    def sharpe_diff_se(x: np.ndarray) -> float:
+        """
+        Delta-method HAC standard error for annualised SR1 - SR2.
+
+        Moment vector:
+            m = [E(r1), E(r2), E(r1^2), E(r2^2)]
+
+        Sharpe difference:
+            g(m) = mu1 / sigma1 - mu2 / sigma2
+        where:
+            sigma_i^2 = E(r_i^2) - mu_i^2
+        """
+        x1 = x[:, 0]
+        x2 = x[:, 1]
+        t = len(x)
+
+        mu1 = x1.mean()
+        mu2 = x2.mean()
+        q1 = np.mean(x1 ** 2)
+        q2 = np.mean(x2 ** 2)
+
+        var1 = q1 - mu1 ** 2
+        var2 = q2 - mu2 ** 2
+
+        if var1 <= 0 or var2 <= 0:
+            return np.nan
+
+        sig1 = np.sqrt(var1)
+        sig2 = np.sqrt(var2)
+
+        # Moment matrix
+        z = np.column_stack([x1, x2, x1 ** 2, x2 ** 2])
+        omega = hac_lrv(z, hac_lags)
+
+        # Gradient of annualised Sharpe difference
+        scale = np.sqrt(annualization)
+
+        grad = np.array([
+            q1 / sig1 ** 3,
+            -q2 / sig2 ** 3,
+            -0.5 * mu1 / sig1 ** 3,
+            0.5 * mu2 / sig2 ** 3,
+        ]) * scale
+
+        var_g = float(grad @ omega @ grad / t)
+
+        if var_g <= 0 or not np.isfinite(var_g):
+            return np.nan
+
+        return float(np.sqrt(var_g))
+
+    obs = sharpe_diff(R)
+    se_obs = sharpe_diff_se(R)
+
+    if not np.isfinite(obs) or not np.isfinite(se_obs) or se_obs <= 0:
+        raise ValueError("Could not compute a finite Sharpe difference or standard error.")
+
+    n_blocks = int(np.ceil(n / block))
+
+    boot_theta = np.empty(n_boot)
+    boot_se = np.empty(n_boot)
+    boot_t = np.empty(n_boot)
+
     for b in range(n_boot):
-        starts = rng.integers(0, n - block + 1, n_blocks)
-        idx = np.concatenate([np.arange(s, s + block) for s in starts])[:n]
-        boot[b] = sr_diff(R[idx])
-    centred = boot - boot.mean()
-    p = float(np.mean(np.abs(centred) >= np.abs(obs)))
-    return obs, p
+        # Circular block bootstrap: blocks can start anywhere and wrap around.
+        starts = rng.integers(0, n, size=n_blocks)
+        idx = np.concatenate([
+            (np.arange(s, s + block) % n) for s in starts
+        ])[:n]
+
+        Rb = R[idx]
+
+        theta_b = sharpe_diff(Rb)
+        se_b = sharpe_diff_se(Rb)
+
+        boot_theta[b] = theta_b
+        boot_se[b] = se_b
+
+        if np.isfinite(theta_b) and np.isfinite(se_b) and se_b > 0:
+            boot_t[b] = (theta_b - obs) / se_b
+        else:
+            boot_t[b] = np.nan
+
+    boot_t = boot_t[np.isfinite(boot_t)]
+
+    if len(boot_t) < 0.8 * n_boot:
+        raise ValueError("Too many invalid bootstrap replications.")
+
+    alpha = 1.0 - conf
+
+    # Studentized bootstrap quantiles
+    q_lo = np.quantile(boot_t, alpha / 2)
+    q_hi = np.quantile(boot_t, 1.0 - alpha / 2)
+
+    # Studentized confidence interval:
+    # theta lies in [obs - q_hi * se_obs, obs - q_lo * se_obs]
+    ci_lo = float(obs - q_hi * se_obs)
+    ci_hi = float(obs - q_lo * se_obs)
+
+    # Studentized two-sided bootstrap p-value
+    t_obs = obs / se_obs
+    p = float(np.mean(np.abs(boot_t) >= abs(t_obs)))
+
+    return float(obs), p, ci_lo, ci_hi
+
+
+def benjamini_hochberg(
+    pvals: Dict[str, float],
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """
+    Benjamini-Hochberg FDR correction for a family of hypothesis tests.
+
+    Parameters
+    ----------
+    pvals : dict
+        Mapping test label -> raw p-value.
+    alpha : float
+        Desired FDR level.
+
+    Returns
+    -------
+    DataFrame with columns:
+        pval        raw p-value
+        rank        BH rank, where 1 is the smallest p-value
+        bh_critical BH critical value k / m * alpha
+        pval_adj    BH-adjusted p-value, monotone-enforced
+        reject      True if the null is rejected at FDR level alpha
+    """
+    if len(pvals) == 0:
+        return pd.DataFrame(
+            columns=["pval", "rank", "bh_critical", "pval_adj", "reject"]
+        )
+
+    labels = list(pvals.keys())
+    raw = np.array([pvals[label] for label in labels], dtype=float)
+
+    if np.any(np.isnan(raw)):
+        raise ValueError("p-values contain NaN.")
+    if np.any((raw < 0) | (raw > 1)):
+        raise ValueError("p-values must be between 0 and 1.")
+
+    m = len(raw)
+
+    # Sort p-values increasingly: p_(1) <= ... <= p_(m)
+    order = np.argsort(raw)
+    sorted_raw = raw[order]
+    sorted_ranks = np.arange(1, m + 1)
+
+    # BH critical values in sorted order
+    sorted_bh_critical = sorted_ranks / m * alpha
+
+    # Step-up rejection rule:
+    # find largest k such that p_(k) <= k/m * alpha,
+    # then reject all hypotheses with rank <= k
+    passes = sorted_raw <= sorted_bh_critical
+    sorted_reject = np.zeros(m, dtype=bool)
+
+    if passes.any():
+        k_star = np.max(np.where(passes)[0])
+        sorted_reject[: k_star + 1] = True
+
+    # Adjusted p-values:
+    # p_adj_(k) = min_{j >= k} (m / j) p_(j), clipped at 1
+    scaled = (m / sorted_ranks) * sorted_raw
+    adj_sorted = np.minimum.accumulate(scaled[::-1])[::-1]
+    adj_sorted = np.minimum(adj_sorted, 1.0)
+
+    # Map sorted results back to original label order
+    ranks = np.empty(m, dtype=int)
+    bh_critical = np.empty(m, dtype=float)
+    reject = np.empty(m, dtype=bool)
+    pval_adj = np.empty(m, dtype=float)
+
+    ranks[order] = sorted_ranks
+    bh_critical[order] = sorted_bh_critical
+    reject[order] = sorted_reject
+    pval_adj[order] = adj_sorted
+
+    return pd.DataFrame(
+        {
+            "pval": raw,
+            "rank": ranks,
+            "bh_critical": bh_critical,
+            "pval_adj": pval_adj,
+            "reject": reject,
+        },
+        index=labels,
+    ).sort_values("rank")
+
 
 # =============================================================================
 # Plotting
