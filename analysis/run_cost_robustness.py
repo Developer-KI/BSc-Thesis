@@ -55,7 +55,7 @@ def filter_strategies(strategies: dict, keep: List[str]) -> dict:
     """
     keep_set = set(keep)
     keep_set.add("EW")       # passive equal-weight benchmark
-    keep_set.add("SPY-K")    # passive market-cap benchmark
+    keep_set.add("SPY-100")    # passive market-cap benchmark
     return {k: v for k, v in strategies.items() if k in keep_set}
 
 
@@ -105,8 +105,8 @@ def run_grid(returns_wide: pd.DataFrame,
                               and "Sortino" in metrics.columns else np.nan
 
                 # Secondary baseline: SPY-K (passive market-cap benchmark)
-                base_sr_spyk = metrics.loc["SPY-K", "Sharpe"]  if "SPY-K" in metrics.index else np.nan
-                base_so_spyk = metrics.loc["SPY-K", "Sortino"] if "SPY-K" in metrics.index \
+                base_sr_spyk = metrics.loc["SPY-100", "Sharpe"]  if "SPY-100" in metrics.index else np.nan
+                base_so_spyk = metrics.loc["SPY-100", "Sortino"] if "SPY-100" in metrics.index \
                                and "Sortino" in metrics.columns else np.nan
 
                 for strat, m in metrics.iterrows():
@@ -197,7 +197,7 @@ def make_heatmaps(df: pd.DataFrame, outdir: str) -> None:
     benchmarks = [
         # (delta_col_sharpe,       delta_col_sortino,        bench_label, file_tag)
         ("sharpe_minus_ew",   "sortino_minus_ew",   "EW",    "EW"),
-        ("sharpe_minus_spyk", "sortino_minus_spyk", "SPY-K", "SPYK"),
+        ("sharpe_minus_spyk", "sortino_minus_spyk", "SPY-100", "SPYK"),
     ]
 
     for strat in active:
@@ -257,8 +257,8 @@ def make_summary_table_plot(summary: pd.DataFrame,
         "mean_turnover":     "Turnover",
         "mean_dSharpe_EW":   "ΔSharpe vs EW",
         "mean_dSortino_EW":  "ΔSortino vs EW",
-        "mean_dSharpe_SPYK": "ΔSharpe vs SPY-K",
-        "mean_dSortino_SPYK":"ΔSortino vs SPY-K",
+        "mean_dSharpe_SPYK": "ΔSharpe vs SPY-100",
+        "mean_dSortino_SPYK":"ΔSortino vs SPY-100",
     }
     cols = [c for c in _rename if c in summary.columns]
     tbl = summary[cols].rename(columns=_rename)
