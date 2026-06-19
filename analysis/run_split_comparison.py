@@ -164,7 +164,7 @@ def main() -> None:
     OUTDIR        = Path(__file__).resolve().parent.parent / "results" / "split_comparison"
 
     print("=== HMVA heuristic vs. brute-force split comparison ===")
-    print(f"  objective      : Corr(EW_A,EW_B)")
+    print(f"  objective      : Corr(EW_L,EW_R)")
     print(f"  cluster sizes  : {CLUSTER_SIZES}")
     print(f"  reps per size  : {N_REPS}")
     print()

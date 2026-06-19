@@ -804,24 +804,24 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> Stra
         "HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe", kf_tp=True, ewma_halflife=21),
         "HMVA-mv":  vol_bl_strategy(cov_nonlinear_shrink, bisect_method="vol", kf_tp=True, ewma_halflife=21),
         # Best MVO is EXP weights, with KF
-        #"MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
+        "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
         #"MVO-K":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=None),
         #"MVO-E":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
         #"MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
         # Best MHRP is EXp weights, with KF
-        #"MHRP-EK":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=21),
+        "MHRP-EK":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=21),
         #"MHRP-K":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=None),
         #"MHRP-E":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=21),
         #"MHRP":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=None),
         # Best GMV is EXP weights, with KF
-        #"GMV-EK":      min_var_strategy(cov_ewa_nls, kf_tp=True),
+        "GMV-EK":      min_var_strategy(cov_ewa_nls, kf_tp=True),
         #"GMV-K":      min_var_strategy(cov_nonlinear_shrink, kf_tp=True),
         #"GMV-E":      min_var_strategy(cov_ewa_nls, kf_tp=False),
         #"GMV":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
         # Best HRP is EXP weights, no KF
         #"HRP-EK":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=True),
         #"HRP-K":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True),
-        #"HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
+        "HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
         #"HRP":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
         "EW":       (cov_sample, equal_weights),
     }
@@ -1033,6 +1033,7 @@ def compute_metrics_pit(daily_returns: pd.DataFrame,
     """
     _nan_row = dict(AnnReturn=np.nan, AnnVol=np.nan, Sharpe=np.nan,
                     MaxDD=np.nan, Calmar=np.nan, Turnover=np.nan,
+                    EffN=np.nan,
                     SharpeStab=np.nan, Sortino=np.nan, Omega=np.nan,
                     VaR95=np.nan, CVaR95=np.nan, Skew=np.nan,
                     Kurt=np.nan, HitRate=np.nan)
@@ -1064,10 +1065,19 @@ def compute_metrics_pit(daily_returns: pd.DataFrame,
         else:
             turnover = np.nan
 
+        # effective number of holdings: 1/HHI averaged over rebalance dates
+        eff_n_vals = []
+        for w in wd.values():
+            w2 = (w ** 2).sum()
+            if w2 > 0:
+                eff_n_vals.append(1.0 / w2)
+        eff_n = float(np.mean(eff_n_vals)) if eff_n_vals else np.nan
+
         sharpe_stab = (r.rolling(63).mean() / r.rolling(63).std()).std()
         rows[name] = dict(AnnReturn=ann_ret, AnnVol=ann_vol,
                           Sharpe=sharpe, MaxDD=max_dd, Calmar=calmar,
-                          Turnover=turnover, SharpeStab=sharpe_stab,
+                          Turnover=turnover, EffN=eff_n,
+                          SharpeStab=sharpe_stab,
                           **_extra_metrics(r))
     return pd.DataFrame(rows).T
 
