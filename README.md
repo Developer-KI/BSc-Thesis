@@ -18,21 +18,6 @@ HMVA is evaluated in a fully point-in-time backtest of the top-100 S&P 500 const
 
 ---
 
-## What HMVA Is
-
-**HMVA (Hierarchical Mean Variance Allocation)** constructs an investment decision in four stages:
-
-1. Apply exponential weighting to the return window and estimate the mean vector and covariance matrix from the weighted data.
-2. Construct a top-down binary asset hierarchy by recursively separating clusters whose equal-weighted returns have low cross-correlation.
-3. Allocate capital through the hierarchy using cluster-level Sharpe approximations.
-4. Apply a latent weight filter that smooths the target allocation between rebalances.
-
-Its key departure from classical mean-variance optimisation is that it never inverts the covariance matrix and never loads a return vector directly onto individual asset weights. Covariance estimates are used to form a diversification hierarchy; return estimates enter only at the cluster level; and the Kalman filter limits unnecessary reallocation when the estimated environment appears noisy.
-
-HMVA differs from HRP in all three principal design choices: (i) tree construction (top-down correlation-minimising vs. bottom-up single-linkage), (ii) capital allocation (Sharpe-weighted vs. inverse-variance), and (iii) weight dynamics (adaptive Kalman filter vs. none). HRP serves as a natural benchmark, not a parent method.
-
----
-
 ## HMVA Pipeline
 
 ### Stage 1 — EWMA Pseudo-Returns
@@ -45,33 +30,9 @@ R̃_t = √(s_t · T) · R_t,   s_t = (1−θ)·θ^(T−1−t) / Σ(1−θ)·θ^
 
 The sample moments of R̃ recover the exponentially weighted moments of R. Setting the half-life equal to the rebalance interval means recent periods receive the largest weight, while older observations decay gradually rather than being discarded abruptly. This allows shrinkage estimators to be applied to R̃ as if it were an ordinary return matrix while inheriting exponential weighting automatically.
 
-### Stage 2 — Nonlinear Shrinkage (NLS) Covariance
-
-Applies the Ledoit-Wolf (2020) analytical nonlinear shrinkage estimator to R̃. Following random matrix theory (Marchenko-Pastur), sample eigenvalues are systematically biased — large ones inflated, small ones deflated — and portfolio optimisers are especially sensitive to the smallest eigenvalues. NLS corrects each eigenvalue individually:
-
-```
-λ_i* = λ_i / |1 − N/T − (N/T)·λ_i·m̃_F(λ_i)|²
-```
-
-where m̃_F(λ) is the boundary value of the Stieltjes transform of the limiting spectral distribution, estimated nonparametrically. The shrunk covariance Σ̂^NLS = U·diag(λ_1*,…,λ_N*)·Uᵀ shares the sample eigenvectors but replaces eigenvalues with their asymptotically optimal corrections under Frobenius loss.
-
-### Stage 3 — Black-Litterman Return Estimates
-
-Constructs return estimates as a Bayesian blend of a conservative cross-sectional prior with skip-month momentum:
-
-- **View Q:** cross-sectional mean of raw daily returns over [t−T_h, t−T_r], skipping the most recent T_r days to avoid short-term reversal (Jegadeesh 1993).
-- **Prior π:** flat equal-return prior set to the cross-sectional average over the estimation window (rounded upward to the nearest 0.01%).
-- **Uncertainty Ω:** diag(Σ̂) — asset-specific, proportional to each asset's own variance.
-
-With P = I_N and τ = 1, the BL posterior simplifies to:
-
-```
-μ̂^BL = π + Σ̂ · (Σ̂ + diag(Σ̂))⁻¹ · (Q − π)
-```
-
 This regularises the raw momentum signal toward the uninformative prior, dampening noise in cross-sectional return estimates.
 
-### Stage 4 — Top-Down Correlation-Minimising Tree
+### Stage 2 — Top-Down Correlation-Minimising Tree
 
 Builds a complete binary tree over assets using top-down recursive bipartition. At each node the split that minimises the estimated correlation between the two equal-weighted child portfolios is selected:
 
@@ -83,7 +44,7 @@ f(L, R) = Corr_EW(L, R) = Cov_EW(L, R) / √(Var_EW(L) · Var_EW(R))
 
 Clusters of up to n*bf = 10 assets use exhaustive search; larger clusters use an O(n²) contiguous-cut heuristic via 2D prefix sums (see \_Split Criterion Walkthrough* below).
 
-### Stage 5 — Sharpe-Ratio Capital Allocation
+### Stage 3 — Sharpe-Ratio Capital Allocation
 
 At each internal node, equal-weighted cluster Sharpe proxies are formed to reduce signal-estimation noise through cluster averaging:
 
@@ -95,7 +56,7 @@ where μ̄_BL(C) is the equal-weight mean BL return and σ_EW(C) is the equal-we
 
 The allocation fraction going to the left child L is Ŝ(L) / (Ŝ(L) + Ŝ(R)). If both proxies are zero or negative, allocation falls back to inverse-volatility bisection (risk-only mode). This risk-only variant is denoted **HMVA-mv**.
 
-### Stage 6 — Kalman-Filter Weight Smoother
+### Stage 4 — Latent Weight Smoother
 
 Interprets rebalancing as a linear filtering problem for the latent portfolio weights. The smoothed allocation is:
 
@@ -398,6 +359,10 @@ pip install -r requirements.txt
 cd analysis
 ```
 
+### To only replicate the papers results
+
+Run all cells in makeall.ipynb
+
 ### Main strategy comparison
 
 ```bash
@@ -482,20 +447,3 @@ Four hypothesis families are tested separately: (1) HMVA vs. return-based active
 6. **Heuristic validation:** The contiguous-cut split heuristic is validated on the split objective, not on realized portfolio performance.
 
 ---
-
-## Bibliography
-
-- Markowitz, H. (1952). _Portfolio Selection._ Journal of Finance.
-- Ledoit, O., & Wolf, M. (2004). _Honey, I Shrunk the Sample Covariance Matrix._ Journal of Portfolio Management.
-- Ledoit, O., & Wolf, M. (2008). _Robust Performance Hypothesis Testing with the Sharpe Ratio._ Journal of Empirical Finance.
-- Ledoit, O., & Wolf, M. (2020). _Analytical Nonlinear Shrinkage of Large-Dimensional Covariance Matrices._ Annals of Statistics.
-- Black, F., & Litterman, R. (1992). _Global Portfolio Optimization._ Financial Analysts Journal.
-- López de Prado, M. (2016). _Building Diversified Portfolios that Outperform Out of Sample._ Journal of Portfolio Management.
-- DeMiguel, V., Garlappi, L., & Uppal, R. (2009). _Optimal Versus Naive Diversification._ Review of Financial Studies.
-- Jegadeesh, N., & Titman, S. (1993). _Returns to Buying Winners and Selling Losers._ Journal of Finance.
-- Michaud, R.O. (1989). _The Markowitz Optimization Enigma: Is Optimized Optimal?_ Financial Analysts Journal.
-- Kalman, R.E. (1960). _A New Approach to Linear Filtering and Prediction Problems._ Journal of Basic Engineering.
-- Holm, S. (1979). _A Simple Sequentially Rejective Multiple Test Procedure._ Scandinavian Journal of Statistics.
-- Newey, W., & West, K. (1994). _Automatic Lag Selection in Covariance Matrix Estimation._ Review of Economic Studies.
-- Marchenko, V.A., & Pastur, L.A. (1967). _Distribution of eigenvalues for some sets of random matrices._ Mathematics of the USSR-Sbornik.
-- RiskMetrics Group (1996). _RiskMetrics Technical Document._ J.P. Morgan/Reuters.
