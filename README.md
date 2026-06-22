@@ -1,9 +1,10 @@
 # Building Mean-Variance Portfolios That Perform Out-of-Sample
 
 _BSc Econometrics and Data Science Thesis — University of Amsterdam_
+
 _Author: Kiril Ivanov · Supervisor: Dr. Sanders Barendse_
 
-**Research question:** Can a hierarchical allocation framework that avoids direct covariance-matrix inversion — combining EWMA preprocessing, nonlinear shrinkage, Black-Litterman return estimates, a top-down correlation-minimising tree, Sharpe-ratio capital allocation, and an adaptive Kalman-filter weight smoother — deliver superior out-of-sample risk-adjusted performance on a point-in-time S&P 500 universe?
+**Research question:** Can a hierarchical mean-variance allocation framework deliver superior out-of-sample risk-adjusted performance on a point-in-time S&P 500 universe?
 
 ---
 
