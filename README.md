@@ -1,216 +1,224 @@
-# Hierarchical Minimum Variance Allocation (HMVA)
+# Building Mean-Variance Portfolios That Perform Out-of-Sample
 
 _BSc Econometrics and Data Science Thesis — University of Amsterdam_
+_Author: Kiril Ivanov · Supervisor: Dr. Sanders Barendse_
 
-**Central question:** Can a complete, covariance-minimising hierarchical allocation framework —
-combining EWMA-weighted nonlinear shrinkage, Black-Litterman return estimates, a top-down binary
-splitting criterion, Sharpe-ratio capital allocation, and adaptive Kalman-filter weight smoothing —
-deliver superior out-of-sample risk-adjusted performance on a point-in-time S&P 500 universe?
+**Research question:** Can a hierarchical allocation framework that avoids direct covariance-matrix inversion — combining EWMA preprocessing, nonlinear shrinkage, Black-Litterman return estimates, a top-down correlation-minimising tree, Sharpe-ratio capital allocation, and an adaptive Kalman-filter weight smoother — deliver superior out-of-sample risk-adjusted performance on a point-in-time S&P 500 universe?
 
 ---
 
-## What HMVA is
+## Abstract
 
-**HMVA (Hierarchical Minimum Variance Allocator)** is a portfolio allocation method that constructs
-a binary tree over assets by greedily minimising inter-cluster covariance at each split, then
-distributes capital down the tree using Sharpe-ratio-weighted bisection. Its six stages each address
-a specific failure mode of estimation-naive allocation:
+Mean-variance optimisation often performs poorly out-of-sample because inverting the covariance matrix amplifies estimation error in expected returns and covariances into unstable, concentrated portfolios. This thesis introduces Hierarchical Mean Variance Allocation (HMVA), a long-only portfolio-construction method designed to target risk-adjusted performance without directly inverting an estimated covariance matrix.
 
-| Stage | Component                                                                 | Failure mode addressed                                       |
-| ----- | ------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| 1     | EWMA pseudo-returns (half-life h = 21 days)                               | Equal weighting ignores volatility clustering                |
-| 2     | Nonlinear shrinkage covariance (Ledoit-Wolf 2020)                         | Sample Σ has biased eigenvalues at any N/T ratio             |
-| 3     | Black-Litterman expected returns                                          | Pure-risk allocation ignores return expectations             |
-| 4     | Top-down binary tree (minimise inter-cluster EW covariance + correlation) | Static correlation tree conflates two notions of similarity  |
-| 5     | Sharpe-ratio bisection                                                    | Variance bisection ignores expected risk-adjusted return     |
-| 6     | Kalman-filter weight smoother                                             | Noisy weight updates generate excessive, uninformed turnover |
+HMVA organises the asset universe into a top-down binary tree whose splits minimise the correlation between equal-weighted sub-portfolios. It allocates capital recursively using cluster-level Sharpe proxies formed from return estimates, reverting to inverse-volatility bisection when no positive return estimate is available. An adaptive Kalman-filter smoothing step then blends each rebalance's target weights with the previous holdings, reducing turnover when the estimated risk structure is diffuse and updating more aggressively when the return signal changes.
 
-HMVA differs from HRP in all three principal design choices: (i) tree construction (top-down
-covariance-minimising vs. bottom-up single-linkage), (ii) capital allocation (Sharpe-weighted vs.
-inverse-variance), and (iii) weight dynamics (adaptive Kalman filter vs. none). HRP serves as a
-natural benchmark, not a parent method.
+HMVA is evaluated in a fully point-in-time backtest of the top-100 S&P 500 constituents from 2000 to 2024 against mean-variance, minimum-variance, hierarchical risk-parity, modified hierarchical risk-parity, and passive benchmarks, with all active strategies using identical regularised inputs. HMVA achieves the highest full-sample point-estimate Sharpe ratio of **0.746**, exceeding equal weighting by 0.317 and mean-variance optimisation from the same inputs by 0.377 Sharpe points, while reducing maximum drawdown by about 18 percentage points relative to equal weighting. Statistical inference provides the strongest evidence against classical mean-variance optimisation: the HMVA vs MVO-EK difference is significant at the 5% level after Holm correction. The equal-weight comparison reaches the conventional rejection threshold; the SPY-100 comparison is borderline; comparisons against MHRP-EK and the risk-only benchmarks remain positive but statistically inconclusive.
 
 ---
 
-## HMVA pipeline
+## What HMVA Is
 
-### Stage 1 — EWMA pseudo-returns
+**HMVA (Hierarchical Mean Variance Allocation)** constructs an investment decision in four stages:
 
-Weights each observation in the lookback window exponentially with half-life h = 21 trading days
-(decay λ = 0.5^(1/21) ≈ 0.9672). The rescaled matrix R̃ satisfies R̃ᵀR̃/T = Σ̂_EWMA, so that the
-NLS estimator in Stage 2 operates on exponentially down-weighted data.
+1. Apply exponential weighting to the return window and estimate the mean vector and covariance matrix from the weighted data.
+2. Construct a top-down binary asset hierarchy by recursively separating clusters whose equal-weighted returns have low cross-correlation.
+3. Allocate capital through the hierarchy using cluster-level Sharpe approximations.
+4. Apply a latent weight filter that smooths the target allocation between rebalances.
 
-### Stage 2 — Nonlinear shrinkage (NLS) covariance
+Its key departure from classical mean-variance optimisation is that it never inverts the covariance matrix and never loads a return vector directly onto individual asset weights. Covariance estimates are used to form a diversification hierarchy; return estimates enter only at the cluster level; and the Kalman filter limits unnecessary reallocation when the estimated environment appears noisy.
 
-Applies Ledoit-Wolf (2020) analytical nonlinear shrinkage to R̃. Each sample eigenvalue receives an
-asymptotically optimal, eigenvalue-specific shrinkage correction; eigenvectors are unchanged. NLS is
-positive-definite at any N/T ratio and avoids the uniform shrinkage of linear methods.
-
-### Stage 3 — Black-Litterman trend expected returns
-
-Constructs return estimates with:
-
-- **Prior:** π = 0.01 · **1**\_N (flat, equal-return prior)
-- **Signal Q:** skip-month cross-sectional mean of raw daily returns (skipping the most recent 21 days to avoid short-term reversal)
-- **Uncertainty:** Ω = diag(Σ̂)
-
-The BL posterior is:
-
-```
-μ_BL = π + Σ̂ (Σ̂ + diag(Σ̂))⁻¹ (Q − π)
-```
-
-This regularises the raw momentum signal toward the uninformative prior, dampening noise in
-cross-sectional return estimates.
-
-### Stage 4 — Top-down binary tree
-
-Builds a complete binary tree over assets using top-down recursive bipartition. At each node, the
-split that minimises the following objective is selected:
-
-```
-f(A, B) = 0.5 × Cov_EW(A, B) + 0.5 × Corr_EW(A, B)
-```
-
-where:
-
-- **Cov_EW(A, B)** = cross / (n_A × n_B) = equal-weight inter-cluster covariance
-- **Corr_EW(A, B)** = cross / √(S_A × S_B) = Pearson correlation between the two EW sub-portfolios
-
-and `cross = Σ_{i∈A, j∈B} Σ̂_ij`, `S_C = Σ_{i,j∈C} Σ̂_ij`.
-
-The 50/50 blend penalises both the absolute covariance level and the relative cross-cluster
-correlation simultaneously. Clusters of up to 10 assets use exhaustive search; larger clusters use
-an O(n²) contiguous-cut heuristic via 2-D prefix sums (see _Split Criterion Walkthrough_ below).
-
-### Stage 5 — Sharpe-ratio bisection
-
-At each internal node, capital is allocated between left (L) and right (R) subtrees proportional to
-their cluster Sharpe proxies:
-
-```
-Ŝ(C) = max(μ̄_BL,C / σ_EW(C), 0)
-```
-
-where μ̄_BL,C is the equal-weight mean BL return and σ_EW(C) is the equal-weight volatility of
-cluster C. The weight fraction going to L is Ŝ(L) / (Ŝ(L) + Ŝ(R)); if both proxies are
-non-positive the allocation falls back to inverse-variance bisection.
-
-### Stage 6 — Kalman-filter weight smoother
-
-Computes a time-varying smoothing gain K_t from two signals:
-
-- **R_t** = normalised spectral entropy of Σ̂ eigenvalues ∈ [0, 1]: high when covariance structure is stable, low when concentrated
-- **Q_t** = relative BL signal velocity = ‖μ_BL(t) − μ_BL(t−1)‖ / ‖μ_BL(t−1)‖: high when the return signal is moving rapidly
-
-```
-K_t = Q_t / (Q_t + R_t)
-w_t = (1 − K_t) × w_{t−1} + K_t × w_raw
-```
-
-When the covariance structure is stable and the return signal is quiet (small Q_t, large R_t), K_t
-is close to zero and weights barely move. When the signal is large and the structure is
-concentrated, K_t rises and the portfolio updates more aggressively.
+HMVA differs from HRP in all three principal design choices: (i) tree construction (top-down correlation-minimising vs. bottom-up single-linkage), (ii) capital allocation (Sharpe-weighted vs. inverse-variance), and (iii) weight dynamics (adaptive Kalman filter vs. none). HRP serves as a natural benchmark, not a parent method.
 
 ---
 
-## Strategies in `make_crsp_strategies()`
+## HMVA Pipeline
 
-| Label     | Tree                      | Covariance | Bisection           | KF  |
-| --------- | ------------------------- | ---------- | ------------------- | --- |
-| `HMVA`    | Top-down, minimise f(A,B) | EWMA + NLS | Sharpe-ratio        | Yes |
-| `HMVA-mv` | Top-down, minimise f(A,B) | EWMA + NLS | Variance            | Yes |
-| `HRP`     | Agglomerative single-link | NLS (raw)  | Variance            | No  |
-| `MVO`     | —                         | NLS (raw)  | Max-utility (γ=2.5) | No  |
-| `GMV`     | —                         | NLS (raw)  | Min-variance        | No  |
-| `EW`      | —                         | —          | Equal               | No  |
-| `SPY-K`   | —                         | —          | Market cap          | No  |
+### Stage 1 — EWMA Pseudo-Returns
 
-HRP, MVO, and GMV use NLS applied to the raw (un-EWMA-weighted) return window. EWMA
-preprocessing and the Kalman smoother are exclusive to HMVA and HMVA-mv.
+Following the RiskMetrics (1996) approach, the return window is rescaled into a pseudo-return matrix with decay parameter θ = 2^(−1/T_θ) and half-life T_θ = T_r (set equal to the rebalance interval):
 
----
+```
+R̃_t = √(s_t · T) · R_t,   s_t = (1−θ)·θ^(T−1−t) / Σ(1−θ)·θ^i
+```
 
-## Key results
+The sample moments of R̃ recover the exponentially weighted moments of R. Setting the half-life equal to the rebalance interval means recent periods receive the largest weight, while older observations decay gradually rather than being discarded abruptly. This allows shrinkage estimators to be applied to R̃ as if it were an ordinary return matrix while inheriting exponential weighting automatically.
 
-### Full-sample performance (2000–2024, T = 504 days lookback, monthly rebalance)
+### Stage 2 — Nonlinear Shrinkage (NLS) Covariance
 
-| Strategy | Sharpe    | Sortino   | Ann. Ret. | Ann. Vol. | Max DD     | Calmar | Turnover |
-| -------- | --------- | --------- | --------- | --------- | ---------- | ------ | -------- |
-| **HMVA** | **0.789** | **1.043** | **14.0%** | 17.7%     | **−38.6%** | 0.362  | 1.101    |
-| HMVA-mv  | 0.690     | 0.881     | 10.4%     | 15.1%     | −35.8%     | 0.290  | 0.952    |
-| HRP      | 0.564     | 0.711     | 9.2%      | 16.3%     | −42.4%     | 0.216  | 0.291    |
-| MVO      | 0.162     | 0.223     | 4.0%      | 24.6%     | −51.5%     | 0.077  | 0.509    |
-| GMV      | 0.450     | 0.563     | 6.6%      | 14.7%     | −36.6%     | 0.181  | 0.329    |
-| EW       | 0.477     | 0.596     | 9.0%      | 18.8%     | −55.2%     | 0.163  | 0.057    |
-| SPY-K    | 0.503     | 0.635     | 9.5%      | 18.9%     | −52.3%     | 0.182  | 0.066    |
+Applies the Ledoit-Wolf (2020) analytical nonlinear shrinkage estimator to R̃. Following random matrix theory (Marchenko-Pastur), sample eigenvalues are systematically biased — large ones inflated, small ones deflated — and portfolio optimisers are especially sensitive to the smallest eigenvalues. NLS corrects each eigenvalue individually:
 
-HMVA leads on Sharpe (+0.225 over HRP, +0.286 over EW), Sortino, annualised return, and maximum
-drawdown. HMVA-mv achieves the lowest maximum drawdown of all strategies.
+```
+λ_i* = λ_i / |1 − N/T − (N/T)·λ_i·m̃_F(λ_i)|²
+```
 
-### Statistical tests (all comparisons vs HMVA)
+where m̃_F(λ) is the boundary value of the Stieltjes transform of the limiting spectral distribution, estimated nonparametrically. The shrunk covariance Σ̂^NLS = U·diag(λ_1*,…,λ_N*)·Uᵀ shares the sample eigenvectors but replaces eigenvalues with their asymptotically optimal corrections under Frobenius loss.
 
-| vs HMVA | ΔSharpe | LW p-val  | LW p (Holm) | DM stat    | DM p-val  | DM p (Holm) |
-| ------- | ------- | --------- | ----------- | ---------- | --------- | ----------- |
-| HMVA-mv | +0.099  | 0.240     | 0.425       | −2.525     | 0.012\*   | 0.058       |
-| HRP     | +0.225  | 0.171     | 0.425       | −1.814     | 0.070     | 0.264       |
-| MVO     | +0.627  | **0.007** | **0.042\*** | −1.839     | 0.066     | 0.264       |
-| GMV     | +0.339  | 0.027     | 0.135       | **−2.934** | **0.003** | **0.020\*** |
-| EW      | +0.312  | 0.096     | 0.382       | −1.456     | 0.145     | 0.291       |
-| SPY-K   | +0.286  | 0.142     | 0.425       | −1.259     | 0.208     | 0.291       |
+### Stage 3 — Black-Litterman Return Estimates
 
-Tests: Ledoit-Wolf (2008) circular block-bootstrap Sharpe test (b=21, B=2000); Diebold-Mariano on
-squared losses. Multiple testing corrections: Holm-Bonferroni (FWER) and Benjamini-Hochberg (FDR).
-Significance markers: \* p < 0.05 after correction.
+Constructs return estimates as a Bayesian blend of a conservative cross-sectional prior with skip-month momentum:
 
-HMVA significantly outperforms MVO by the LW test after FWER correction and GMV by the DM test.
-The LW test is underpowered for moderate differences over a single 25-year path.
+- **View Q:** cross-sectional mean of raw daily returns over [t−T_h, t−T_r], skipping the most recent T_r days to avoid short-term reversal (Jegadeesh 1993).
+- **Prior π:** flat equal-return prior set to the cross-sectional average over the estimation window (rounded upward to the nearest 0.01%).
+- **Uncertainty Ω:** diag(Σ̂) — asset-specific, proportional to each asset's own variance.
 
----
+With P = I_N and τ = 1, the BL posterior simplifies to:
 
-## Cost robustness
+```
+μ̂^BL = π + Σ̂ · (Σ̂ + diag(Σ̂))⁻¹ · (Q − π)
+```
 
-Sweep over 3 lookback windows × 5 transaction-cost levels = **15 cells**
-(lookbacks: 126, 252, 504 days; costs: 0, 2, 5, 10, 20 bps per unit |Δw|).
+This regularises the raw momentum signal toward the uninformative prior, dampening noise in cross-sectional return estimates.
 
-| Strategy | Mean ΔSharpe vs EW | Median ΔSharpe vs EW | % cells beating EW | Mean Sharpe | Mean Max DD | Mean Turnover |
-| -------- | ------------------ | -------------------- | ------------------ | ----------- | ----------- | ------------- |
-| HMVA     | +0.253             | +0.271               | **100%**           | 0.725       | −39.5%      | 1.083         |
-| HMVA-mv  | +0.169             | +0.188               | **100%**           | 0.641       | −36.9%      | 0.932         |
+### Stage 4 — Top-Down Correlation-Minimising Tree
 
-HMVA beats equal-weight in all 15 cells. Even at 20 bps per unit |Δw| and a 126-day lookback window,
-the Sharpe advantage persists. HMVA-mv similarly dominates EW across the full grid.
+Builds a complete binary tree over assets using top-down recursive bipartition. At each node the split that minimises the estimated correlation between the two equal-weighted child portfolios is selected:
 
----
+```
+f(L, R) = Corr_EW(L, R) = Cov_EW(L, R) / √(Var_EW(L) · Var_EW(R))
+```
 
-## Crisis-period analysis
+**Motivation:** for any interior allocation α ∈ (0,1) between branches L and R, parent variance is monotonically increasing in the cross-branch correlation. Minimising cross-branch correlation is therefore aligned with constructing a hierarchy whose upper-level branches are maximally diversifying. Volatility and return information are then introduced only in the recursive allocation step, creating a clean separation of roles.
 
-Annualised Sharpe ratios across four crisis and three calm sub-periods.
+Clusters of up to n_bf = 10 assets use exhaustive search; larger clusters use an O(n²) contiguous-cut heuristic via 2D prefix sums (see _Split Criterion Walkthrough_ below).
 
-### Crisis periods
+### Stage 5 — Sharpe-Ratio Capital Allocation
 
-| Period                   | Start   | End     | HMVA       | HMVA-mv    | HRP    | MVO    | GMV    | EW     | SPY-K  |
-| ------------------------ | ------- | ------- | ---------- | ---------- | ------ | ------ | ------ | ------ | ------ |
-| Dot-com trough (2002)    | 2002-01 | 2002-10 | **−0.117** | −0.408     | −0.952 | −0.914 | −1.417 | −0.966 | −0.972 |
-| GFC (2007–2009)          | 2007-10 | 2009-03 | **−0.210** | −0.496     | −0.765 | −0.542 | −0.811 | −0.897 | −0.863 |
-| COVID-19 crash (2020 Q1) | 2020-01 | 2020-04 | **−0.139** | −0.195     | −0.528 | −0.800 | −0.747 | −0.554 | −0.399 |
-| Rate-hike cycle (2022)   | 2022-01 | 2022-12 | −0.251     | **+0.013** | −0.494 | −0.445 | −0.241 | −0.668 | −0.857 |
+At each internal node, equal-weighted cluster Sharpe proxies are formed to reduce signal-estimation noise through cluster averaging:
 
-### Calm periods
+```
+Ŝ(C) = max( μ̄_BL(C) / σ_EW(C), 0 )
+```
 
-| Period                       | Start   | End     | HMVA  | HMVA-mv | HRP   | MVO   | GMV   | EW    | SPY-K |
-| ---------------------------- | ------- | ------- | ----- | ------- | ----- | ----- | ----- | ----- | ----- |
-| Pre-GFC bull (2003–2007)     | 2003-01 | 2007-09 | 1.094 | 0.780   | 1.060 | 0.702 | 1.197 | 1.112 | 0.999 |
-| Post-GFC bull (2009–2020)    | 2009-04 | 2020-01 | 1.218 | 1.218   | 1.240 | 0.591 | 1.221 | 1.079 | 1.087 |
-| Post-COVID rebound (2020–21) | 2020-05 | 2021-12 | 2.033 | 2.435   | 2.131 | 0.151 | 0.728 | 2.172 | 2.175 |
+where μ̄_BL(C) is the equal-weight mean BL return and σ_EW(C) is the equal-weight volatility of cluster C. The truncation at zero preserves the long-only nature of the strategy.
 
-HMVA records the best (least negative) crisis Sharpe in three of four drawdown episodes. In the
-2022 rate-hike cycle, HMVA-mv is the only strategy to record a positive Sharpe. HMVA performs
-competitively in bull markets while preserving the largest part of the downside advantage.
+The allocation fraction going to the left child L is Ŝ(L) / (Ŝ(L) + Ŝ(R)). If both proxies are zero or negative, allocation falls back to inverse-volatility bisection (risk-only mode). This risk-only variant is denoted **HMVA-mv**.
+
+### Stage 6 — Kalman-Filter Weight Smoother
+
+Interprets rebalancing as a linear filtering problem for the latent portfolio weights. The smoothed allocation is:
+
+```
+w̃ = K · w_new + (1 − K) · w_old
+```
+
+where K ∈ [0,1] is a data-adaptive Kalman gain computed from two uncertainty proxies:
+
+- **Y** = normalised return-signal velocity = ‖μ̂_new − μ̂_old‖ / ‖μ̂_old‖ — high when the return environment has changed materially (proxy for _process_ uncertainty).
+- **X** = normalised spectral entropy of Σ̂ eigenvalues ∈ [0,1] — high when the covariance structure is diffuse, low when one eigenvalue dominates (proxy for _measurement_ uncertainty).
+
+```
+K = Y / (X + Y)
+```
+
+When the return signal shifts sharply (large Y) relative to a concentrated covariance structure (small X), the gain rises and the portfolio updates aggressively. When the signal is quiet and the covariance structure is diffuse, the gain falls and weights barely move.
 
 ---
 
-## Split criterion walkthrough
+## Strategies
+
+| Label      | Tree                           | Covariance     | Bisection          | KF  |
+| ---------- | ------------------------------ | -------------- | ------------------ | --- |
+| `HMVA`     | Top-down, minimise Corr_EW     | EWMA + NLS     | Sharpe-ratio       | Yes |
+| `HMVA-mv`  | Top-down, minimise Corr_EW     | EWMA + NLS     | Inverse-volatility | Yes |
+| `MVO-EK`   | —                              | EWMA + NLS     | Max-utility (γ=2.5)| Yes |
+| `MHRP-EK`  | Agglomerative single-link      | EWMA + NLS     | Sharpe-ratio       | Yes |
+| `GMV-EK`   | —                              | EWMA + NLS     | Min-variance       | Yes |
+| `HRP-E`    | Agglomerative single-link      | NLS (EWMA)     | Inverse-variance   | No  |
+| `EW`       | —                              | —              | Equal              | No  |
+| `SPY-100`  | —                              | —              | Market cap         | No  |
+
+Suffix **E** denotes EWMA preprocessing; suffix **K** denotes the adaptive Kalman filter. Every active strategy draws on an identical information set (T_h = 126 days, T_r = 21 days, top-100 point-in-time S&P 500 universe) so that any difference in realized performance is attributable to the construction mechanism.
+
+---
+
+## Key Results
+
+### Full-sample performance (July 2000 – December 2024, T_h = 126 days, monthly rebalance)
+
+| Strategy   | Ann. Ret. | Ann. Vol. | Sharpe    | Sortino   | Max DD     | Ñ    |
+| ---------- | --------- | --------- | --------- | --------- | ---------- | ---- |
+| **HMVA**   | **13.2%** | 17.7%     | **0.746** | **0.976** | **−37.0%** | 4.8  |
+| MVO-EK     | 7.4%      | 24.8%     | 0.299     | 0.375     | −60.4%     | 3.2  |
+| MHRP-EK    | 8.9%      | 16.2%     | 0.547     | 0.685     | −46.2%     | 47.2 |
+| HMVA-mv    | 10.0%     | 15.3%     | 0.652     | 0.837     | −37.5%     | 9.5  |
+| GMV-EK     | 8.2%      | 14.6%     | 0.560     | 0.712     | −38.9%     | 26.3 |
+| HRP-E      | 8.6%      | 15.6%     | 0.554     | 0.697     | −43.2%     | 62.5 |
+| EW         | 7.4%      | 19.0%     | 0.392     | 0.497     | −55.2%     | 100.0|
+| SPY-100    | 7.6%      | 19.1%     | 0.398     | 0.509     | −53.3%     | 52.1 |
+
+Ñ is the mean inverse Herfindahl-Hirschman Index (mean effective number of holdings). HMVA leads on Sharpe (+0.317 over EW, +0.377 over MVO-EK), Sortino, annualised return, and maximum drawdown. The estimation regime is N/T = 100/126 ≈ 0.8 — a difficult setting ideal for testing strategy robustness.
+
+---
+
+## Statistical Tests
+
+Tests use the Ledoit-Wolf (2008) circular block bootstrap (block size b = T_r = 21, B = 2,000 replications), testing equality of Sharpe ratios pairwise. Multiple-testing correction uses Holm-Bonferroni FWER within pre-specified hypothesis families.
+
+### HMVA vs. return-based active strategies
+
+| Comparator | SR diff   | LW 95% C.I.       | LW p   | Holm p    |
+| ---------- | --------- | ----------------- | ------ | --------- |
+| MVO-EK     | +0.377    | [0.064, 0.673]    | 0.016  | **0.031\*** |
+| MHRP-EK    | +0.185    | [−0.080, 0.439]   | 0.157  | 0.157     |
+
+HMVA significantly outperforms MVO-EK after FWER correction. The advantage over MHRP-EK is positive but statistically inconclusive.
+
+### HMVA vs. passive benchmarks
+
+| Comparator | SR diff   | LW 95% C.I.       | LW p   | Holm p    |
+| ---------- | --------- | ----------------- | ------ | --------- |
+| EW         | +0.317    | [0.009, 0.601]    | 0.037  | **0.050\*** |
+| SPY-100    | +0.311    | [−0.010, 0.602]   | 0.050  | 0.050     |
+
+HMVA reaches the 5% rejection threshold against equal weighting. The SPY-100 result is borderline (rounded C.I. slightly includes zero).
+
+### HMVA-mv vs. risk-only strategies
+
+| Comparator | SR diff   | LW 95% C.I.       | LW p   | Holm p    |
+| ---------- | --------- | ----------------- | ------ | --------- |
+| GMV-EK     | +0.087    | [−0.069, 0.248]   | 0.273  | 0.379     |
+| HRP-E      | +0.090    | [−0.106, 0.292]   | 0.379  | 0.379     |
+
+HMVA-mv ranks above both risk-only comparators on a point-estimate basis, but the differences are not statistically significant.
+
+\* p < 0.05 after Holm-Bonferroni correction within the hypothesis family.
+
+---
+
+## Regime Analysis
+
+NBER recession windows in the evaluation sample: Dot-com (2001-03 – 2001-11), GFC (2007-12 – 2009-06), COVID-19 (2020-02 – 2020-04).
+
+### Mean annualised Sharpe by regime
+
+| Strategy  | Crisis  | Calm  |   | Strategy  | Crisis   | Calm  |
+| --------- | ------- | ----- | - | --------- | -------- | ----- |
+| HMVA      | +0.024  | 0.962 |   | HMVA-mv   | −0.146   | 0.942 |
+| MVO-EK    | −0.582  | 0.505 |   | GMV-EK    | −0.153   | 0.864 |
+| MHRP-EK   | −0.188  | 0.858 |   | HRP-E     | −0.212   | 0.854 |
+| SPY-100   | −0.172  | 0.643 |   | EW        | −0.326   | 0.676 |
+
+HMVA is the only strategy with a positive crisis-period Sharpe ratio, and it also leads in calm periods. The results suggest an overall increase in risk-adjusted returns rather than a regime-specific specialisation.
+
+---
+
+## Transaction-Cost Robustness
+
+After-cost Sharpe ratios under proportional one-way transaction costs (basis points per unit |Δw|), compared against equal weighting.
+
+| Strategy  | κ=0   | κ=2   | κ=5   | κ=10  | κ=20  | κ=30  | Turnover |
+| --------- | ----- | ----- | ----- | ----- | ----- | ----- | -------- |
+| HMVA      | 0.746 | 0.729 | 0.703 | 0.660 | 0.574 | 0.489 | 1.133    |
+| HMVA-mv   | 0.652 | 0.636 | 0.612 | 0.572 | 0.492 | 0.412 | 0.941    |
+| EW        | 0.392 | 0.391 | 0.389 | 0.385 | 0.379 | 0.372 | 0.057    |
+| SPY-100   | 0.398 | 0.397 | 0.397 | 0.396 | 0.393 | 0.391 | 0.068    |
+
+HMVA maintains the highest after-cost Sharpe ratio across all examined cost levels. Even at 30 bps per unit turnover, HMVA exceeds both passive benchmarks. The advantage naturally compresses as costs increase, but the ranking remains favorable throughout the tested range.
+
+---
+
+## Split Criterion Walkthrough
 
 These three functions implement the **covariance-minimising bipartition** used in HMVA's tree
 construction. The algorithm recursively splits each cluster into two sub-clusters by minimising a
@@ -289,7 +297,7 @@ def _vb_split_bruteforce(cov_arr, indices) -> Tuple[List[int], List[int]]:
 ```
 
 **Purpose:** Globally optimal bipartition by exhaustive enumeration of all subsets of size
-r = 1 … n//2. Called when `len(indices) ≤ bf_threshold` (≤ 16).
+r = 1 … n//2. Called when `len(indices) ≤ bf_threshold` (≤ 10).
 
 Key steps:
 
@@ -346,15 +354,15 @@ from "low-covariance" ones.
 
 Returns `([2, 3], [0, 1])` — the natural split, matching brute-force. ✓
 
-**Empirical accuracy** (from `results/split_comparison/summary.csv`, 300 random factor-model Σ per n):
+**Empirical accuracy** (from `results/split_comparison/summary.csv`, 100 random factor-model Σ per n):
 
-| Cluster size n | Median approx. ratio | p95 ratio | Exact match rate |
-| -------------- | -------------------- | --------- | ---------------- |
-| 12             | 1.000                | 1.000     | 53%              |
-| 14             | 1.000                | 1.000     | 51%              |
-| 16             | 0.996                | 1.000     | 49%              |
-| 18             | 1.000                | 1.000     | 51%              |
-| 20             | 0.971                | 1.000     | 39%              |
+| Cluster size n | Median approx. ratio | 95th pct. ratio | Exact match rate |
+| -------------- | -------------------- | --------------- | ---------------- |
+| 12             | 1.000                | 1.000           | 71%              |
+| 14             | 1.000                | 1.000           | 69%              |
+| 16             | 1.000                | 1.000           | 69%              |
+| 18             | 1.000                | 1.000           | 69%              |
+| 20             | 1.000                | 1.000           | 56%              |
 
 The heuristic is near-optimal: the median approximation ratio is 1.000 (identical score to the
 global optimum) across all cluster sizes tested.
@@ -366,12 +374,12 @@ global optimum) across all cluster sizes tested.
 | **Guarantee**          | Globally optimal         | Near-optimal (median ratio = 1.0)   |
 | **Time complexity**    | O(2ⁿ × n²)               | O(n²)                               |
 | **Cuts evaluated**     | All bipartitions         | n−1 contiguous cuts in sorted order |
-| **When used**          | n ≤ bf_threshold (≤ 16)  | n > bf_threshold                    |
+| **When used**          | n ≤ n_bf (≤ 10)          | n > n_bf                            |
 | **Key data structure** | `itertools.combinations` | 2D prefix-sum array P               |
 
 ---
 
-## Project layout
+## Project Layout
 
 ```
 analysis/
@@ -379,25 +387,25 @@ analysis/
 │   ├── backtest.py          # HMVA pipeline, all strategy constructors, statistical tests
 │   ├── data.py              # CRSP loading, point-in-time universe (UniverseFn)
 │   └── plotting.py          # visualisation helpers
-├── run_backtest.py          # main strategy comparison (HMVA, HMVA-mv, HRP, MVO, GMV, EW, SPY-K)
-├── run_cost_robustness.py   # lookback × cost robustness sweep (15 cells)
-├── run_crisis_analysis.py   # crisis / calm sub-period analysis
+├── run_backtest.py          # main strategy comparison
+├── run_cost_robustness.py   # transaction-cost robustness sweep
+├── run_crisis_analysis.py   # NBER regime / sub-period analysis
 └── run_split_comparison.py  # heuristic vs brute-force split accuracy simulation
 thesis/
-├── pilot.tex                # LaTeX thesis source
+├── thesis.tex               # LaTeX thesis source
 └── references.bib           # bibliography
 data/                        # CRSP files
 results/
-├── backtest/                # metrics.csv, statistical_tests.csv, equity/DD plots
-├── cost_robustness/         # robustness_long.csv, robustness_summary.csv, heatmaps
-├── crisis_analysis/         # period_metrics.csv, regime_summary.csv, rolling plots
+├── backtest/                # metrics, statistical_tests, equity/DD plots
+├── cost_robustness/         # robustness tables, Sharpe heatmaps
+├── crisis_analysis/         # period_metrics, regime_summary, rolling plots
 └── split_comparison/        # summary.csv, raw.csv, accuracy plots
 requirements.txt
 ```
 
 ---
 
-## How to run
+## How to Run
 
 ```bash
 pip install -r requirements.txt
@@ -412,7 +420,7 @@ python run_backtest.py
 
 Outputs: `results/backtest/metrics.csv`, `statistical_tests.csv`, equity/drawdown/Sharpe plots.
 
-### Cost × lookback robustness sweep
+### Transaction-cost robustness sweep
 
 ```bash
 python run_cost_robustness.py
@@ -420,14 +428,13 @@ python run_cost_robustness.py
 
 Outputs: `results/cost_robustness/robustness_long.csv`, `robustness_summary.csv`, Sharpe heatmaps.
 
-### Crisis-period analysis
+### Regime/crisis-period analysis
 
 ```bash
 python run_crisis_analysis.py
 ```
 
-Outputs: `results/crisis_analysis/period_metrics.csv`, `regime_summary.csv`, rolling Sharpe and
-equity curves per sub-period.
+Outputs: `results/crisis_analysis/period_metrics.csv`, `regime_summary.csv`, rolling Sharpe plots.
 
 ### Split criterion accuracy simulation
 
@@ -439,23 +446,21 @@ Outputs: `results/split_comparison/summary.csv`, `raw.csv`, approximation-ratio 
 
 ---
 
-## Data inputs
+## Data Inputs
 
-### `data/stock_daily_returns.csv` — CRSP daily file (CIZ format)
+### `data/stock_daily_returns.csv` — CRSP daily file
 
 | Column     | Notes                                                                               |
 | ---------- | ----------------------------------------------------------------------------------- |
 | `PERMNO`   | CRSP unique stock identifier                                                        |
 | `DlyCalDt` | Calendar date (YYYY-MM-DD)                                                          |
 | `DlyClose` | Split-adjusted closing price (used if DlyRet missing)                               |
-| `DlyRet`   | Daily total return (preferred; delisting returns from Shumway 1997 −30% imputation) |
-| `DlyCap`   | Market capitalisation (used for top-K filtering)                                    |
+| `DlyRet`   | Daily total return (preferred)                                                      |
+| `DlyCap`   | Market capitalisation (used for top-100 filtering)                                  |
 
-### `data/constiuents.csv` — S&P 500 historical membership
+### `data/constituents.csv` — S&P 500 historical membership
 
-One row per (PERMNO, membership spell) with columns `permno`, `start`, `ending`. `UniverseFn(date)`
-intersects the membership table with top-100 market cap to give the investable universe at each
-rebalance date, enforcing strict point-in-time constitution.
+One row per (PERMNO, membership spell) with columns `permno`, `start`, `ending`. `UniverseFn(date)` intersects the membership table with the top-100 market cap filter to give the investable universe at each rebalance date, enforcing strict point-in-time constitution (no survivorship bias).
 
 ### Universe construction
 
@@ -463,49 +468,48 @@ At each 21-day rebalance:
 
 1. Identify PERMNOs with active S&P 500 membership on that date.
 2. Restrict to top 100 by market capitalisation.
-3. Require complete non-NaN return history over the full lookback window (T = 504 days).
-4. Apply Shumway (1997) delisting correction: −30% return on the delisting day, then zero.
+3. Require complete non-NaN return history over the full lookback window (T_h = 126 days).
+4. Align weight vectors across consecutive rebalances on the union of assets, with missing entries set to zero, so that newly opened and fully liquidated positions both contribute to turnover.
+
+The backtest period spans July 3, 2000 to December 31, 2024. The first usable rebalance occurs after the 126-day warm-up period from the data start of January 1, 2000. The rolling sample size is chosen to produce a difficult estimation regime of N/T = 100/126 ≈ 0.8.
 
 ---
 
-## Statistical inference
+## Statistical Inference
 
-| Test                             | Description                                                                                         |
-| -------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **Ledoit-Wolf (2008) bootstrap** | Circular block bootstrap, block size b = 21, B = 2000 replications; tests equality of Sharpe ratios |
-| **Diebold-Mariano (1995)**       | Tests equality of mean squared losses (squared daily P&L)                                           |
-| **Holm-Bonferroni**              | Step-down FWER correction across all 6 strategy comparisons                                         |
-| **Benjamini-Hochberg**           | FDR correction (more powerful when multiple alternatives hold)                                      |
+| Test                         | Description                                                                                                           |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Ledoit-Wolf (2008)**        | Circular block bootstrap, block size b = T_r = 21, B = 2,000 replications; studentized with Newey-West HAC std. err. |
+| **Holm-Bonferroni**          | Step-down FWER correction applied within pre-specified hypothesis families (not across all comparisons jointly)       |
 
-HMVA is tested against all six alternatives simultaneously; adjusted p-values account for the
-multiplicity of comparisons.
+Four hypothesis families are tested separately: (1) HMVA vs. return-based active strategies (MVO-EK, MHRP-EK); (2) HMVA vs. passive benchmarks (EW, SPY-100); (3) HMVA-mv vs. risk-only strategies (GMV-EK, HRP-E); (4) HMVA-mv vs. passive benchmarks. Rejection within one family is not interpreted as evidence for a global claim of superiority across all benchmarks.
 
 ---
 
 ## Limitations
 
-1. **Transaction costs:** Main backtest uses zero costs. HMVA turnover ≈ 1.10 (monthly units of
-   |Δw|); at 10 bps per unit, annual drag ≈ 110 bps, reducing Sharpe by approximately 0.14. The
-   cost robustness sweep confirms HMVA beats EW in all 15 cells up to 20 bps.
-2. **Price returns:** `DlyClose` excludes dividends. Both HMVA and benchmarks are affected equally
-   by the approximately 1.5–2% annual dividend yield.
-3. **Universe:** Top-100 S&P 500 is a large-cap universe; results may not generalise to smaller
-   stocks or international markets.
-4. **Single path:** All statistics are estimated from one historical path. The block-bootstrap
-   Sharpe test addresses serial dependence but cannot account for luck across a unique 25-year
-   window.
+1. **Single market/asset class:** The evaluation covers large-cap US equities only; results may not generalise to international markets, small-caps, or multi-asset universes.
+2. **Transaction costs:** The main backtest uses zero costs. HMVA turnover ≈ 1.13 monthly; at 10 bps per unit, annual drag reduces the Sharpe advantage but the ranking remains favorable through 30 bps.
+3. **Price returns:** `DlyClose` excludes dividends. Both HMVA and benchmarks are affected equally by the approximately 1.5–2% annual dividend yield.
+4. **Single path:** All statistics are estimated from one historical path. The block-bootstrap Sharpe test addresses serial dependence but cannot account for luck across a unique 25-year window.
+5. **Design choices:** The brute-force threshold, EWMA half-life, cluster Sharpe proxies, and Kalman gain proxies have not been fully sensitivity-tested. Some in-sample design bias may remain despite the point-in-time backtest.
+6. **Heuristic validation:** The contiguous-cut split heuristic is validated on the split objective, not on realized portfolio performance.
 
 ---
 
 ## Bibliography
 
+- Markowitz, H. (1952). _Portfolio Selection._ Journal of Finance.
 - Ledoit, O., & Wolf, M. (2004). _Honey, I Shrunk the Sample Covariance Matrix._ Journal of Portfolio Management.
 - Ledoit, O., & Wolf, M. (2008). _Robust Performance Hypothesis Testing with the Sharpe Ratio._ Journal of Empirical Finance.
 - Ledoit, O., & Wolf, M. (2020). _Analytical Nonlinear Shrinkage of Large-Dimensional Covariance Matrices._ Annals of Statistics.
-- López de Prado, M. (2016). _Building Diversified Portfolios that Outperform Out of Sample._ Journal of Portfolio Management.
 - Black, F., & Litterman, R. (1992). _Global Portfolio Optimization._ Financial Analysts Journal.
+- López de Prado, M. (2016). _Building Diversified Portfolios that Outperform Out of Sample._ Journal of Portfolio Management.
 - DeMiguel, V., Garlappi, L., & Uppal, R. (2009). _Optimal Versus Naive Diversification._ Review of Financial Studies.
-- Diebold, F.X., & Mariano, R.S. (1995). _Comparing Predictive Accuracy._ Journal of Business & Economic Statistics.
+- Jegadeesh, N., & Titman, S. (1993). _Returns to Buying Winners and Selling Losers._ Journal of Finance.
+- Michaud, R.O. (1989). _The Markowitz Optimization Enigma: Is Optimized Optimal?_ Financial Analysts Journal.
+- Kalman, R.E. (1960). _A New Approach to Linear Filtering and Prediction Problems._ Journal of Basic Engineering.
 - Holm, S. (1979). _A Simple Sequentially Rejective Multiple Test Procedure._ Scandinavian Journal of Statistics.
-- Benjamini, Y., & Hochberg, Y. (1995). _Controlling the False Discovery Rate._ Journal of the Royal Statistical Society: Series B.
-- Shumway, T. (1997). _The Delisting Bias in CRSP Data._ Journal of Finance.
+- Newey, W., & West, K. (1994). _Automatic Lag Selection in Covariance Matrix Estimation._ Review of Economic Studies.
+- Marchenko, V.A., & Pastur, L.A. (1967). _Distribution of eigenvalues for some sets of random matrices._ Mathematics of the USSR-Sbornik.
+- RiskMetrics Group (1996). _RiskMetrics Technical Document._ J.P. Morgan/Reuters.
