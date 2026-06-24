@@ -20,6 +20,11 @@ from typing import Dict, List
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.rcParams.update({
+    "font.size": 13, "axes.titlesize": 14, "axes.labelsize": 13,
+    "xtick.labelsize": 12, "ytick.labelsize": 12,
+    "legend.fontsize": 12, "figure.titlesize": 15,
+})
 import numpy as np
 import pandas as pd
 
@@ -184,10 +189,10 @@ def plot_ablation_table(metrics: pd.DataFrame, tests: pd.DataFrame, outdir: str)
         reject = tests.loc[k, "reject"] if k in tests.index and "reject" in tests.columns else None
         sig = " *" if reject else ""
         ax.text(bar.get_x() + bar.get_width() / 2, v + 0.005,
-                f"{v:.3f}{sig}", ha="center", va="bottom", fontsize=7, rotation=45)
+                f"{v:.3f}{sig}", ha="center", va="bottom", fontsize=10, rotation=45)
 
     ax.set_xticks(range(len(order)))
-    ax.set_xticklabels(order, rotation=35, ha="right", fontsize=8)
+    ax.set_xticklabels(order, rotation=35, ha="right")
     ax.set_ylabel("Annualised Sharpe ratio")
     ax.set_title("HMVA ablation — Sharpe by configuration")
     ax.set_ylim(0, max(sharpes) * 1.22)
@@ -196,7 +201,7 @@ def plot_ablation_table(metrics: pd.DataFrame, tests: pd.DataFrame, outdir: str)
     ax.legend(handles=[
         Patch(color="#1976D2", label="Sharpe bisect (return signal)"),
         Patch(color="#E65100", label="Vol bisect (no return signal)"),
-    ], loc="lower right", fontsize=8)
+    ], loc="lower right")
     ax.grid(axis="y", linewidth=0.4, linestyle="--")
     plt.tight_layout()
     path = os.path.join(outdir, "ablation_sharpe_bars.png")

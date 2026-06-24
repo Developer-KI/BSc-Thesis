@@ -8,6 +8,11 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.rcParams.update({
+    "font.size": 13, "axes.titlesize": 14, "axes.labelsize": 13,
+    "xtick.labelsize": 12, "ytick.labelsize": 12,
+    "legend.fontsize": 12, "figure.titlesize": 15,
+})
 import matplotlib.ticker as mtick
 import matplotlib.dates as mdates
 from matplotlib.colors import TwoSlopeNorm
@@ -333,13 +338,13 @@ def plot_rolling_sharpe_full(daily: pd.DataFrame,
 
     _draw_rolling_sharpe_lines(ax, rs, daily.columns)
     _style_sharpe_ax(ax)
-    ax.set_title(f"Rolling {_ROLLING_WINDOW}-day Sharpe ratio", fontsize=12)
+    ax.set_title(f"Rolling {_ROLLING_WINDOW}-day Sharpe ratio")
 
     locator = mdates.AutoDateLocator(minticks=6, maxticks=12)
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
     ax.tick_params(axis="x", rotation=30)
-    ax.legend(fontsize=8, ncol=len(rs.columns), loc="upper left",
+    ax.legend(ncol=len(rs.columns), loc="upper left",
               framealpha=0.85, edgecolor="lightgrey")
 
     ax.set_ylim(ax.get_ylim())
@@ -348,7 +353,7 @@ def plot_rolling_sharpe_full(daily: pd.DataFrame,
         ts, te = pd.Timestamp(s), pd.Timestamp(e)
         mid    = ts + (te - ts) / 2
         ax.text(mid, ybot, label, ha="center", va="bottom",
-                fontsize=7.5, color="#8b0000",
+                fontsize=10, color="#8b0000",
                 bbox=dict(fc="white", alpha=0.6, ec="none", pad=1))
 
     fig.tight_layout()
@@ -363,7 +368,7 @@ def plot_crisis_equity(daily: pd.DataFrame,
     n                   = len(periods)
     nrows, ncols, fsize = _grid_shape(n)
     fig, axes = plt.subplots(nrows, ncols, figsize=fsize, squeeze=False)
-    fig.suptitle("Equity curves during NBER recession periods", fontsize=13)
+    fig.suptitle("Equity curves during NBER recession periods")
 
     for idx, (label, (s, e)) in enumerate(periods):
         ax  = axes[idx // ncols][idx % ncols]
@@ -382,14 +387,14 @@ def plot_crisis_equity(daily: pd.DataFrame,
             ax.plot(cum.index, cum.values,
                     color=_col_color(col, daily.columns), lw=2.4, alpha=1.0, label=col, zorder=5)
         ax.axhline(1, color="black", lw=0.5, ls="--")
-        ax.set_title(label, fontsize=10)
+        ax.set_title(label)
         ax.set_ylabel("Growth of $1")
         ax.yaxis.set_major_formatter(mtick.FormatStrFormatter("%.2f"))
         locator = mdates.AutoDateLocator(minticks=4, maxticks=7)
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
         ax.tick_params(axis="x", rotation=30)
-        ax.legend(fontsize=7)
+        ax.legend()
 
     # hide any unused axes
     for idx in range(n, nrows * ncols):
@@ -420,20 +425,20 @@ def plot_period_sharpe_heatmap(all_metrics: pd.DataFrame,
     im = ax.imshow(pivot.values.astype(float), aspect="auto",
                    cmap="RdYlGn", norm=norm)
     ax.set_xticks(range(len(pivot.columns)))
-    ax.set_xticklabels(pivot.columns, fontsize=10)
+    ax.set_xticklabels(pivot.columns)
     ax.set_yticks(range(len(pivot.index)))
-    ax.set_yticklabels(pivot.index, fontsize=9)
+    ax.set_yticklabels(pivot.index)
     for i in range(len(pivot.index)):
         for j in range(len(pivot.columns)):
             v = pivot.values[i, j]
             if not np.isnan(v):
                 ax.text(j, i, f"{v:.2f}", ha="center", va="center",
-                        fontsize=9, color="black")
+                        fontsize=11, color="black")
     n_crisis = sum(1 for k in crisis_names if k in pivot.index.tolist())
     if 0 < n_crisis < len(pivot):
         ax.axhline(n_crisis - 0.5, color="white", lw=2)
     fig.colorbar(im, ax=ax, label="Annualised Sharpe ratio")
-    ax.set_title("Sharpe ratio by market regime and strategy", fontsize=12)
+    ax.set_title("Sharpe ratio by market regime and strategy")
     fig.tight_layout()
     fig.savefig(f"{outdir}/period_sharpe_heatmap.png", bbox_inches="tight")
     plt.close(fig)
@@ -447,7 +452,7 @@ def plot_crisis_rolling_sharpe(daily: pd.DataFrame,
     n                   = len(periods)
     nrows, ncols, fsize = _grid_shape(n)
     fig, axes = plt.subplots(nrows, ncols, figsize=fsize, squeeze=False)
-    fig.suptitle(f"Rolling {_ROLLING_WINDOW}-day Sharpe during NBER recessions", fontsize=13)
+    fig.suptitle(f"Rolling {_ROLLING_WINDOW}-day Sharpe during NBER recessions")
 
     for idx, (label, (s, e)) in enumerate(periods):
         ax  = axes[idx // ncols][idx % ncols]
@@ -466,13 +471,13 @@ def plot_crisis_rolling_sharpe(daily: pd.DataFrame,
         ax.axhline(0,  color="black", lw=0.8, ls="-")
         ax.axhline(1,  color="grey",  lw=0.7, ls="--", alpha=0.6)
         ax.axhline(-1, color="grey",  lw=0.7, ls="--", alpha=0.6)
-        ax.set_title(label, fontsize=10)
+        ax.set_title(label)
         ax.set_ylabel("Rolling Sharpe")
         locator = mdates.AutoDateLocator(minticks=4, maxticks=7)
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
         ax.tick_params(axis="x", rotation=30)
-        ax.legend(fontsize=7)
+        ax.legend()
 
     for idx in range(n, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
@@ -510,7 +515,7 @@ def plot_annual_returns(daily: pd.DataFrame,
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=0))
     ax.set_ylabel("Annual return")
     ax.set_title("Annual returns by strategy (shaded = NBER recession years)")
-    ax.legend(ncol=len(cols), fontsize=9)
+    ax.legend(ncol=len(cols))
     fig.tight_layout()
     fig.savefig(f"{outdir}/annual_returns.png", bbox_inches="tight")
     plt.close(fig)

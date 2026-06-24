@@ -8,6 +8,11 @@ from typing import List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+plt.rcParams.update({
+    "font.size": 13, "axes.titlesize": 14, "axes.labelsize": 13,
+    "xtick.labelsize": 12, "ytick.labelsize": 12,
+    "legend.fontsize": 12, "figure.titlesize": 15,
+})
 import seaborn as sns
 
 import utils.backtest as L

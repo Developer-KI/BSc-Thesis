@@ -17,7 +17,7 @@ DATA_CSV = "./data/stock_daily_returns.csv"
 CONSTITUENTS_CSV = "./data/constiuents.csv"
 PERMNO_LIST_TXT = "./data/unique_ids.txt"
 
-SUBFOLDER_OUTPUT = "base"
+SUBFOLDER_OUTPUT = "full"
 
 PERMNO_COL = "PERMNO"
 DATE_COL = "DlyCalDt"

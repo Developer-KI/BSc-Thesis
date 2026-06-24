@@ -7,6 +7,11 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.rcParams.update({
+    "font.size": 13, "axes.titlesize": 14, "axes.labelsize": 13,
+    "xtick.labelsize": 12, "ytick.labelsize": 12,
+    "legend.fontsize": 12, "figure.titlesize": 15,
+})
 import seaborn as sns
 
 from typing import List
@@ -112,11 +117,11 @@ def plot_results(df: pd.DataFrame, outdir: Path) -> None:
     ax.plot(n_vals, med.loc[n_vals], "o-",
             color="steelblue", lw=1.8, ms=5, label="Median")
     ax.axhline(1.0, color="black", lw=0.9, ls="--", label="Optimal  (ratio = 1)")
-    ax.set_xlabel("Cluster size  n", fontsize=11)
-    ax.set_ylabel("Score(heuristic) / Score(brute-force)", fontsize=10)
-    ax.set_title("Heuristic approximation quality", fontsize=11)
+    ax.set_xlabel("Cluster size  n")
+    ax.set_ylabel("Score(heuristic) / Score(brute-force)")
+    ax.set_title("Heuristic approximation quality")
     ax.set_xticks(n_vals)
-    ax.legend(fontsize=9)
+    ax.legend()
     plt.tight_layout()
     plt.savefig(outdir / "approx_ratio.png", dpi=130)
     plt.close()
@@ -125,9 +130,9 @@ def plot_results(df: pd.DataFrame, outdir: Path) -> None:
     match_rate = df.groupby("n")["exact_match"].mean() * 100
     ax.plot(n_vals, match_rate.loc[n_vals], "s-",
             color="steelblue", lw=1.6, ms=6)
-    ax.set_xlabel("Cluster size  n", fontsize=11)
-    ax.set_ylabel("Exact match rate  (%)", fontsize=11)
-    ax.set_title("Fraction of trials where heuristic = brute-force optimum", fontsize=11)
+    ax.set_xlabel("Cluster size  n")
+    ax.set_ylabel("Exact match rate  (%)")
+    ax.set_title("Fraction of trials where heuristic = brute-force optimum")
     ax.set_ylim(0, 105)
     ax.set_xticks(n_vals)
     plt.tight_layout()
@@ -143,10 +148,10 @@ def plot_results(df: pd.DataFrame, outdir: Path) -> None:
     pad = (hi - lo) * 0.03
     ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad],
             "k--", lw=0.9, label="y = x  (optimal)")
-    ax.set_xlabel("Brute-force objective", fontsize=10)
-    ax.set_ylabel("Heuristic objective",   fontsize=10)
-    ax.set_title("Objective values: heuristic vs. exhaustive", fontsize=11)
-    ax.legend(fontsize=8)
+    ax.set_xlabel("Brute-force objective")
+    ax.set_ylabel("Heuristic objective")
+    ax.set_title("Objective values: heuristic vs. exhaustive")
+    ax.legend()
     plt.tight_layout()
     plt.savefig(outdir / "score_scatter.png", dpi=130)
     plt.close()

@@ -10,6 +10,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+plt.rcParams.update({
+    "font.size": 13, "axes.titlesize": 14, "axes.labelsize": 13,
+    "xtick.labelsize": 12, "ytick.labelsize": 12,
+    "legend.fontsize": 12, "figure.titlesize": 15,
+})
 import utils.plotting as _plt
 
 from itertools import combinations
@@ -805,24 +810,24 @@ def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> Stra
         "HMVA-mv":  vol_bl_strategy(cov_nonlinear_shrink, bisect_method="vol", kf_tp=True, ewma_halflife=21),
         # Best MVO is EXP weights, with KF
         "MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
-        #"MVO-K":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=None),
-        #"MVO-E":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
-        #"MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
+        "MVO-K":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=None),
+        "MVO-E":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
+        "MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
         # Best MHRP is EXp weights, with KF
-        "MHRP-EK":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=21),
+        #"MHRP-EK":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=21),
         #"MHRP-K":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=None),
         #"MHRP-E":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=21),
         #"MHRP":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=None),
         # Best GMV is EXP weights, with KF
         "GMV-EK":      min_var_strategy(cov_ewa_nls, kf_tp=True),
-        #"GMV-K":      min_var_strategy(cov_nonlinear_shrink, kf_tp=True),
-        #"GMV-E":      min_var_strategy(cov_ewa_nls, kf_tp=False),
-        #"GMV":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
+        "GMV-K":      min_var_strategy(cov_nonlinear_shrink, kf_tp=True),
+        "GMV-E":      min_var_strategy(cov_ewa_nls, kf_tp=False),
+        "GMV":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
         # Best HRP is EXP weights, no KF
-        #"HRP-EK":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=True),
-        #"HRP-K":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True),
+        "HRP-EK":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=True),
+        "HRP-K":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True),
         "HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
-        #"HRP":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
+        "HRP":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
         "EW":       (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
@@ -1375,7 +1380,7 @@ def plot_equity_and_drawdown(daily: pd.DataFrame, outdir: str,
     (1 + daily).cumprod().plot(ax=ax, lw=1.4)
     ax.set_title(f"Out-of-sample equity curves {title_suffix}".strip())
     ax.set_ylabel("Wealth (start = 1)")
-    ax.legend(loc="best", fontsize=8)
+    ax.legend(loc="best")
     plt.tight_layout()
     plt.savefig(f"{outdir}/equity_curves.png", dpi=120)
     plt.close()
@@ -1385,7 +1390,7 @@ def plot_equity_and_drawdown(daily: pd.DataFrame, outdir: str,
     fig, ax = plt.subplots(figsize=(11, 4))
     dd.plot(ax=ax)
     ax.set_title(f"Drawdowns {title_suffix}".strip())
-    ax.legend(loc="lower right", fontsize=8)
+    ax.legend(loc="lower right")
     plt.tight_layout()
     plt.savefig(f"{outdir}/drawdowns.png", dpi=120)
     plt.close()
@@ -1423,7 +1428,7 @@ def plot_weights_heatmap(weights_log: Dict[str, pd.DataFrame], outdir: str,
         last = W.iloc[-1].sort_values(ascending=False).head(20).to_frame("w")
         sns.heatmap(last, annot=True, fmt=".2%", cmap="Blues",
                     cbar=False, ax=ax)
-        ax.set_title(name, fontsize=10)
+        ax.set_title(name)
     plt.suptitle("Top-20 weights at final rebalance", y=1.02)
     plt.tight_layout()
     plt.savefig(f"{outdir}/last_weights.png", dpi=120, bbox_inches="tight")
@@ -1560,7 +1565,7 @@ def plot_holdings_concentration(
                 color=palette[i % len(palette)])
     ax.set_title(f"Effective Holdings {suf}")
     ax.set_ylabel("Effective N")
-    ax.legend(loc="best", fontsize=8)
+    ax.legend(loc="best")
     plt.tight_layout()
     plt.savefig(f"{outdir}/holdings_effective_n.png", dpi=150)
     plt.close()
