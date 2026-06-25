@@ -194,7 +194,7 @@ def plot_ablation_table(metrics: pd.DataFrame, tests: pd.DataFrame, outdir: str)
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels(order, rotation=35, ha="right")
     ax.set_ylabel("Annualised Sharpe ratio")
-    ax.set_title("HMVA ablation — Sharpe by configuration")
+    ax.set_title("Sharpe by configuration")
     ax.set_ylim(0, max(sharpes) * 1.22)
 
     from matplotlib.patches import Patch
