@@ -4,18 +4,6 @@ _BSc Econometrics and Data Science Thesis — University of Amsterdam_
 
 _Author: Kiril Ivanov · Supervisor: Dr. Sanders Barendse_
 
-**Research question:** Can a hierarchical mean-variance allocation framework deliver superior out-of-sample risk-adjusted performance on a point-in-time S&P 500 universe?
-
----
-
-## Abstract
-
-Mean-variance optimisation often performs poorly out-of-sample because inverting the covariance matrix amplifies estimation error in expected returns and covariances into unstable, concentrated portfolios. This thesis introduces Hierarchical Mean Variance Allocation (HMVA), a long-only portfolio-construction method designed to target risk-adjusted performance without directly inverting an estimated covariance matrix.
-
-HMVA organises the asset universe into a top-down binary tree whose splits minimise the correlation between equal-weighted sub-portfolios. It allocates capital recursively using cluster-level Sharpe proxies formed from return estimates, reverting to inverse-volatility bisection when no positive return estimate is available. An adaptive Kalman-filter smoothing step then blends each rebalance's target weights with the previous holdings, reducing turnover when the estimated risk structure is diffuse and updating more aggressively when the return signal changes.
-
-HMVA is evaluated in a fully point-in-time backtest of the top-100 S&P 500 constituents from 2000 to 2024 against mean-variance, minimum-variance, hierarchical risk-parity, modified hierarchical risk-parity, and passive benchmarks, with all active strategies using identical regularised inputs. HMVA achieves the highest full-sample point-estimate Sharpe ratio of **0.746**, exceeding equal weighting by 0.317 and mean-variance optimisation from the same inputs by 0.377 Sharpe points, while reducing maximum drawdown by about 18 percentage points relative to equal weighting. Statistical inference provides the strongest evidence against classical mean-variance optimisation: the HMVA vs MVO-EK difference is significant at the 5% level after Holm correction. The equal-weight comparison reaches the conventional rejection threshold; the SPY-100 comparison is borderline; comparisons against MHRP-EK and the risk-only benchmarks remain positive but statistically inconclusive.
-
 ---
 
 ## HMVA Pipeline
@@ -74,94 +62,6 @@ K = Y / (X + Y)
 ```
 
 When the return signal shifts sharply (large Y) relative to a concentrated covariance structure (small X), the gain rises and the portfolio updates aggressively. When the signal is quiet and the covariance structure is diffuse, the gain falls and weights barely move.
-
----
-
-## Key Results
-
-### Full-sample performance (July 2000 – December 2024, T_h = 126 days, monthly rebalance)
-
-| Strategy | Ann. Ret. | Ann. Vol. | Sharpe    | Sortino   | Max DD     | Ñ     |
-| -------- | --------- | --------- | --------- | --------- | ---------- | ----- |
-| **HMVA** | **13.2%** | 17.7%     | **0.746** | **0.976** | **−37.0%** | 4.8   |
-| MVO-EK   | 7.4%      | 24.8%     | 0.299     | 0.375     | −60.4%     | 3.2   |
-| MHRP-EK  | 8.9%      | 16.2%     | 0.547     | 0.685     | −46.2%     | 47.2  |
-| HMVA-mv  | 10.0%     | 15.3%     | 0.652     | 0.837     | −37.5%     | 9.5   |
-| GMV-EK   | 8.2%      | 14.6%     | 0.560     | 0.712     | −38.9%     | 26.3  |
-| HRP-E    | 8.6%      | 15.6%     | 0.554     | 0.697     | −43.2%     | 62.5  |
-| EW       | 7.4%      | 19.0%     | 0.392     | 0.497     | −55.2%     | 100.0 |
-| SPY-100  | 7.6%      | 19.1%     | 0.398     | 0.509     | −53.3%     | 52.1  |
-
-Suffix **E** denotes EWMA preprocessing; suffix **K** denotes the adaptive Kalman filter. Every active strategy draws on an identical information set (T_h = 126 days, T_r = 21 days, top-100 point-in-time S&P 500 universe) so that any difference in realized performance is attributable to the construction mechanism.
-
-Ñ is the mean inverse Herfindahl-Hirschman Index (mean effective number of holdings). HMVA leads on Sharpe (+0.317 over EW, +0.377 over MVO-EK), Sortino, annualised return, and maximum drawdown. The estimation regime is N/T = 100/126 ≈ 0.8 — a difficult setting ideal for testing strategy robustness.
-
----
-
-## Statistical Tests
-
-Tests use the Ledoit-Wolf (2008) circular block bootstrap (block size b = T_r = 21, B = 2,000 replications), testing equality of Sharpe ratios pairwise. Multiple-testing correction uses Holm-Bonferroni FWER within pre-specified hypothesis families.
-
-### HMVA vs. return-based active strategies
-
-| Comparator | SR diff | LW 95% C.I.     | LW p  | Holm p      |
-| ---------- | ------- | --------------- | ----- | ----------- |
-| MVO-EK     | +0.377  | [0.064, 0.673]  | 0.016 | **0.031\*** |
-| MHRP-EK    | +0.185  | [−0.080, 0.439] | 0.157 | 0.157       |
-
-HMVA significantly outperforms MVO-EK after FWER correction. The advantage over MHRP-EK is positive but statistically inconclusive.
-
-### HMVA vs. passive benchmarks
-
-| Comparator | SR diff | LW 95% C.I.     | LW p  | Holm p      |
-| ---------- | ------- | --------------- | ----- | ----------- |
-| EW         | +0.317  | [0.009, 0.601]  | 0.037 | **0.050\*** |
-| SPY-100    | +0.311  | [−0.010, 0.602] | 0.050 | 0.050       |
-
-HMVA reaches the 5% rejection threshold against equal weighting. The SPY-100 result is borderline (rounded C.I. slightly includes zero).
-
-### HMVA-mv vs. risk-only strategies
-
-| Comparator | SR diff | LW 95% C.I.     | LW p  | Holm p |
-| ---------- | ------- | --------------- | ----- | ------ |
-| GMV-EK     | +0.087  | [−0.069, 0.248] | 0.273 | 0.379  |
-| HRP-E      | +0.090  | [−0.106, 0.292] | 0.379 | 0.379  |
-
-HMVA-mv ranks above both risk-only comparators on a point-estimate basis, but the differences are not statistically significant.
-
-\* p < 0.05 after Holm-Bonferroni correction within the hypothesis family.
-
----
-
-## Regime Analysis
-
-NBER recession windows in the evaluation sample: Dot-com (2001-03 – 2001-11), GFC (2007-12 – 2009-06), COVID-19 (2020-02 – 2020-04).
-
-### Mean annualised Sharpe by regime
-
-| Strategy | Crisis | Calm  |     | Strategy | Crisis | Calm  |
-| -------- | ------ | ----- | --- | -------- | ------ | ----- |
-| HMVA     | +0.024 | 0.962 |     | HMVA-mv  | −0.146 | 0.942 |
-| MVO-EK   | −0.582 | 0.505 |     | GMV-EK   | −0.153 | 0.864 |
-| MHRP-EK  | −0.188 | 0.858 |     | HRP-E    | −0.212 | 0.854 |
-| SPY-100  | −0.172 | 0.643 |     | EW       | −0.326 | 0.676 |
-
-HMVA is the only strategy with a positive crisis-period Sharpe ratio, and it also leads in calm periods. The results suggest an overall increase in risk-adjusted returns rather than a regime-specific specialisation.
-
----
-
-## Transaction-Cost Robustness
-
-After-cost Sharpe ratios under proportional one-way transaction costs (basis points per unit |Δw|), compared against equal weighting.
-
-| Strategy | κ=0   | κ=2   | κ=5   | κ=10  | κ=20  | κ=30  | Turnover |
-| -------- | ----- | ----- | ----- | ----- | ----- | ----- | -------- |
-| HMVA     | 0.746 | 0.729 | 0.703 | 0.660 | 0.574 | 0.489 | 1.133    |
-| HMVA-mv  | 0.652 | 0.636 | 0.612 | 0.572 | 0.492 | 0.412 | 0.941    |
-| EW       | 0.392 | 0.391 | 0.389 | 0.385 | 0.379 | 0.372 | 0.057    |
-| SPY-100  | 0.398 | 0.397 | 0.397 | 0.396 | 0.393 | 0.391 | 0.068    |
-
-HMVA maintains the highest after-cost Sharpe ratio across all examined cost levels. Even at 30 bps per unit turnover, HMVA exceeds both passive benchmarks. The advantage naturally compresses as costs increase, but the ranking remains favorable throughout the tested range.
 
 ---
 
@@ -434,16 +334,5 @@ The backtest period spans July 3, 2000 to December 31, 2024. The first usable re
 | **Holm-Bonferroni**    | Step-down FWER correction applied within pre-specified hypothesis families (not across all comparisons jointly)      |
 
 Four hypothesis families are tested separately: (1) HMVA vs. return-based active strategies (MVO-EK, MHRP-EK); (2) HMVA vs. passive benchmarks (EW, SPY-100); (3) HMVA-mv vs. risk-only strategies (GMV-EK, HRP-E); (4) HMVA-mv vs. passive benchmarks. Rejection within one family is not interpreted as evidence for a global claim of superiority across all benchmarks.
-
----
-
-## Limitations
-
-1. **Single market/asset class:** The evaluation covers large-cap US equities only; results may not generalise to international markets, small-caps, or multi-asset universes.
-2. **Transaction costs:** The main backtest uses zero costs. HMVA turnover ≈ 1.13 monthly; at 10 bps per unit, annual drag reduces the Sharpe advantage but the ranking remains favorable through 30 bps.
-3. **Price returns:** `DlyClose` excludes dividends. Both HMVA and benchmarks are affected equally by the approximately 1.5–2% annual dividend yield.
-4. **Single path:** All statistics are estimated from one historical path. The block-bootstrap Sharpe test addresses serial dependence but cannot account for luck across a unique 25-year window.
-5. **Design choices:** The brute-force threshold, EWMA half-life, cluster Sharpe proxies, and Kalman gain proxies have not been fully sensitivity-tested. Some in-sample design bias may remain despite the point-in-time backtest.
-6. **Heuristic validation:** The contiguous-cut split heuristic is validated on the split objective, not on realized portfolio performance.
 
 ---
