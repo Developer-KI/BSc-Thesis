@@ -28,12 +28,11 @@ _PALETTE = _plt._PALETTE
 RESULTS_DIR = "results"
 SUBFOLDER   = "base"
 
-STRATEGIES = ["HMVA", "HMVA-mv", "HRP-E", "MHRP-EK", "MVO-EK", "GMV-EK", "EW", "SPY-100"]
+STRATEGIES = ["HMVA", "HMVA-mv", "HRP", "MVO", "GMV", "EW", "SPY-100"]
 
 # Pretty names for NBER recessions, keyed by YYYY-MM of the first month USREC=1 in FRED
 # (FRED month-start labels lag the NBER peak month by one month)
 _RECESSION_NAMES: Dict[str, str] = {
-    "1990-08": "1990 Recession",
     "2001-04": "Dot Com Bubble",
     "2008-01": "Global Financial Crisis",
     "2020-03": "COVID-19 Recession",
@@ -394,7 +393,6 @@ def plot_crisis_equity(daily: pd.DataFrame,
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
         ax.tick_params(axis="x", rotation=30)
-        ax.legend()
 
     # hide any unused axes
     for idx in range(n, nrows * ncols):
@@ -477,7 +475,7 @@ def plot_crisis_rolling_sharpe(daily: pd.DataFrame,
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
         ax.tick_params(axis="x", rotation=30)
-        ax.legend()
+
 
     for idx in range(n, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)

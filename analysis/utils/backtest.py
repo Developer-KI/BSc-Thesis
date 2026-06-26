@@ -20,7 +20,6 @@ import utils.plotting as _plt
 from itertools import combinations
 from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import squareform
-from scipy.stats import norm
 from scipy.optimize import minimize
 import nonlinshrink as nls
 
@@ -149,6 +148,55 @@ def _kf_smooth_weights(
     s = w.sum()
     return w / s if s > 1e-12 else np.ones(N) / N
 
+def _align_prev_state(
+    prev_w_stored,
+    mu_prev_stored,
+    permnos: Optional[np.ndarray],
+    N: int,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Align stored prev_w (and optional mu_prev) to the current PERMNO universe.
+
+    When permnos is provided and the stored values are pd.Series, aligns by
+    PERMNO index — new stocks get weight 0 then the vector is renormalised.
+    When permnos is None (fixed-universe backtest()), falls back to positional
+    blending and returns None on a dimension mismatch.
+    """
+    if prev_w_stored is None:
+        return None, None
+
+    if permnos is not None and isinstance(prev_w_stored, pd.Series):
+        w_prev = prev_w_stored.reindex(permnos).fillna(0.0).values
+        s = w_prev.sum()
+        w_prev = w_prev / s if s > 1e-12 else np.ones(N) / N
+        mu_prev = (
+            mu_prev_stored.reindex(permnos).fillna(0.0).values
+            if isinstance(mu_prev_stored, pd.Series)
+            else None
+        )
+    else:
+        w_prev = prev_w_stored if isinstance(prev_w_stored, np.ndarray) else None
+        if w_prev is not None and len(w_prev) != N:
+            return None, None
+        mu_prev = mu_prev_stored if isinstance(mu_prev_stored, np.ndarray) else None
+        if mu_prev is not None and len(mu_prev) != N:
+            mu_prev = None
+
+    return w_prev, mu_prev
+
+
+def _store_prev_state(w, mu, permnos, kf_tp, prev_w, kf_cache):
+    """Persist current weights (and mu) for next-period KF smoothing."""
+    if permnos is not None:
+        prev_w["w"] = pd.Series(w, index=permnos)
+        if kf_tp:
+            kf_cache["mu_prev"] = pd.Series(mu, index=permnos) if mu is not None else None
+    else:
+        prev_w["w"] = w.copy()
+        if kf_tp:
+            kf_cache["mu_prev"] = mu.copy() if mu is not None else None
+
+
 # =============================================================================
 # Portfolio Allocation
 # =============================================================================
@@ -248,28 +296,39 @@ def hrp_strategy(
             cache["window"] = window
             return cov
 
-        def _alloc_fn(cov: np.ndarray) -> np.ndarray:
-            window = cache.get("window", np.zeros((1, cov.shape[0])))
+        def _alloc_fn(cov: np.ndarray, *,
+                      permnos: Optional[np.ndarray] = None,
+                      date=None) -> np.ndarray:
+            N = cov.shape[0]
+            window = cache.get("window", np.zeros((1, N)))
             mu = mu_BL_trend(window, cov)
             w = hrp_weights(cov, linkage_method=linkage_method,
                             mu=mu, bisect_method="sharpe")
-            if kf_tp and prev_w["w"] is not None and kf_cache["mu_prev"] is not None:
-                w = _kf_smooth_weights(w, prev_w["w"], cov, mu, kf_cache["mu_prev"])
-            prev_w["w"] = w.copy()
-            if kf_tp:
-                kf_cache["mu_prev"] = mu.copy()
+            if kf_tp and prev_w["w"] is not None:
+                w_prev, mu_prev = _align_prev_state(
+                    prev_w["w"], kf_cache["mu_prev"], permnos, N)
+                if w_prev is not None:
+                    w = _kf_smooth_weights(w, w_prev, cov, mu, mu_prev)
+            _store_prev_state(w, mu, permnos, kf_tp, prev_w, kf_cache)
             return w
 
+        _alloc_fn._context_aware = True
         return _cov_fn, _alloc_fn
 
     else:
-        def _alloc_fn_vol(cov: np.ndarray) -> np.ndarray:
+        def _alloc_fn_vol(cov: np.ndarray, *,
+                          permnos: Optional[np.ndarray] = None,
+                          date=None) -> np.ndarray:
+            N = cov.shape[0]
             w = hrp_weights(cov, linkage_method=linkage_method)
             if kf_tp and prev_w["w"] is not None:
-                w = _kf_smooth_weights(w, prev_w["w"], cov)
-            prev_w["w"] = w.copy()
+                w_prev, _ = _align_prev_state(prev_w["w"], None, permnos, N)
+                if w_prev is not None:
+                    w = _kf_smooth_weights(w, w_prev, cov)
+            _store_prev_state(w, None, permnos, kf_tp, prev_w, kf_cache)
             return w
 
+        _alloc_fn_vol._context_aware = True
         return cov_fn, _alloc_fn_vol
 
 def min_var_weights(cov: np.ndarray) -> np.ndarray:
@@ -309,14 +368,21 @@ def min_var_strategy(
     smoothing is driven entirely by covariance spectral entropy (R_t).
     """
     prev_w: Dict[str, Optional[np.ndarray]] = {"w": None}
+    kf_cache: Dict = {"mu_prev": None}
 
-    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
+    def _alloc_fn(cov: np.ndarray, *,
+                  permnos: Optional[np.ndarray] = None,
+                  date=None) -> np.ndarray:
+        N = cov.shape[0]
         w = min_var_weights(cov)
         if kf_tp and prev_w["w"] is not None:
-            w = _kf_smooth_weights(w, prev_w["w"], cov)
-        prev_w["w"] = w.copy()
+            w_prev, _ = _align_prev_state(prev_w["w"], None, permnos, N)
+            if w_prev is not None:
+                w = _kf_smooth_weights(w, w_prev, cov)
+        _store_prev_state(w, None, permnos, kf_tp, prev_w, kf_cache)
         return w
 
+    _alloc_fn._context_aware = True
     return cov_fn, _alloc_fn
 
 
@@ -378,20 +444,24 @@ def max_utility_strategy(
         cache["window"] = window
         return cov
 
-    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
-        window = cache.get("window", np.zeros((1, cov.shape[0])))
+    def _alloc_fn(cov: np.ndarray, *,
+                  permnos: Optional[np.ndarray] = None,
+                  date=None) -> np.ndarray:
+        N = cov.shape[0]
+        window = cache.get("window", np.zeros((1, N)))
         mu = mu_BL_trend(window, cov)
         w = max_utility_weights(cov, mu, gamma=gamma)
 
-        if kf_tp and prev_w["w"] is not None and kf_cache["mu_prev"] is not None:
-            w = _kf_smooth_weights(w, prev_w["w"], cov, mu, kf_cache["mu_prev"])
+        if kf_tp and prev_w["w"] is not None:
+            w_prev, mu_prev = _align_prev_state(
+                prev_w["w"], kf_cache["mu_prev"], permnos, N)
+            if w_prev is not None:
+                w = _kf_smooth_weights(w, w_prev, cov, mu, mu_prev)
 
-        prev_w["w"] = w.copy()
-        if kf_tp:
-            kf_cache["mu_prev"] = mu.copy()
-
+        _store_prev_state(w, mu, permnos, kf_tp, prev_w, kf_cache)
         return w
 
+    _alloc_fn._context_aware = True
     return _cov_fn, _alloc_fn
 
 
@@ -416,13 +486,12 @@ def make_spyk_allocator(cap_wide: pd.DataFrame) -> Callable:
         n = len(permnos)
         ew = np.ones(n) / n
         try:
-            if date in cap_wide.index:
-                row = cap_wide.loc[date]
-            else:
-                idx = cap_wide.index.searchsorted(date, side="right") - 1
-                if idx < 0:
-                    return ew
-                row = cap_wide.iloc[idx]
+            # Use the last available cap strictly before rebalance date to avoid
+            # same-day lookahead (DlyCap[t] is end-of-day, but portfolio earns arr[t]).
+            idx = cap_wide.index.searchsorted(date, side="left") - 1
+            if idx < 0:
+                return ew
+            row = cap_wide.iloc[idx]
         except Exception:
             return ew
         caps = row.reindex(permnos.tolist()).values.astype(float)
@@ -689,7 +758,9 @@ def vol_bl_strategy(
         cache["window"] = window
         return cov
 
-    def _alloc_fn(cov: np.ndarray) -> np.ndarray:
+    def _alloc_fn(cov: np.ndarray, *,
+                  permnos: Optional[np.ndarray] = None,
+                  date=None) -> np.ndarray:
         N = cov.shape[0]
         window = cache.get("window", np.zeros((1, N)))
         mu = mu_BL_trend(window, cov)
@@ -699,18 +770,17 @@ def vol_bl_strategy(
             bisect_method=bisect_method,
         )
 
-        if kf_tp and prev_w["w"] is not None and kf_cache["mu_prev"] is not None:
-            if bisect_method == "vol":
-                w = _kf_smooth_weights(w, prev_w["w"], cov)
-            else:
-                w = _kf_smooth_weights(w, prev_w["w"], cov, mu, kf_cache["mu_prev"])
+        if kf_tp and prev_w["w"] is not None:
+            w_prev, mu_prev = _align_prev_state(
+                prev_w["w"], kf_cache["mu_prev"], permnos, N)
+            if w_prev is not None:
+                kf_mu = mu_prev if bisect_method != "vol" else None
+                w = _kf_smooth_weights(w, w_prev, cov, mu, kf_mu)
 
-        prev_w["w"] = w.copy()
-        if kf_tp:
-            kf_cache["mu_prev"] = mu.copy()
-
+        _store_prev_state(w, mu, permnos, kf_tp, prev_w, kf_cache)
         return w
 
+    _alloc_fn._context_aware = True
     return _cov_fn, _alloc_fn
 
 
@@ -806,28 +876,11 @@ def backtest(returns: pd.DataFrame,
 # Commented lines are for full runs to compare ablation of exp weights and filtering
 def make_crsp_strategies(market_cap_wide: Optional[pd.DataFrame] = None) -> StrategyMap:
     strategies: StrategyMap = {
-        #"HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe", kf_tp=True, ewma_halflife=21),
+        "HMVA":     vol_bl_strategy(cov_nonlinear_shrink, bisect_method="sharpe", kf_tp=True, ewma_halflife=21),
         "HMVA-mv":  vol_bl_strategy(cov_nonlinear_shrink, bisect_method="vol", kf_tp=True, ewma_halflife=21),
-        # Best MVO is EXP weights, with KF
-        #"MVO-EK":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=21),
-        #"MVO-K":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=True, ewma_halflife=None),
-        #"MVO-E":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
-        #"MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=None),
-        # Best MHRP is EXp weights, with KF
-        #"MHRP-EK":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=21),
-        #"MHRP-K":  hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True, bisect_method="sharpe", ewma_halflife=None),
-        #"MHRP-E":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=21),
-        #"MHRP":hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False, bisect_method="sharpe", ewma_halflife=None),
-        # Best GMV is EXP weights, with KF
-        "GMV-EK":      min_var_strategy(cov_ewa_nls, kf_tp=True),
-        #"GMV-K":      min_var_strategy(cov_nonlinear_shrink, kf_tp=True),
-        #"GMV-E":      min_var_strategy(cov_ewa_nls, kf_tp=False),
-        #"GMV":      min_var_strategy(cov_nonlinear_shrink, kf_tp=False),
-        # Best HRP is EXP weights, no KF
-        #"HRP-EK":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=True),
-        #"HRP-K":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=True),
-        "HRP-E":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
-        #HRP":      hrp_strategy(cov_nonlinear_shrink, linkage_method="single", kf_tp=False),
+        "MVO":      max_utility_strategy(cov_nonlinear_shrink, gamma=2.5, kf_tp=False, ewma_halflife=21),
+        "GMV":      min_var_strategy(cov_ewa_nls, kf_tp=False),
+        "HRP":      hrp_strategy(cov_ewa_nls, linkage_method="single", kf_tp=False),
         "EW":       (cov_sample, equal_weights),
     }
     if market_cap_wide is not None:
@@ -844,7 +897,7 @@ def backtest_pit(returns_wide: pd.DataFrame,
                  rf_daily: Optional[pd.Series] = None,
                  min_history_days: Optional[int] = None,
                  verbose: bool = True,
-                 ) -> Tuple[pd.DataFrame, Dict[str, Dict[pd.Timestamp, pd.Series]]]:
+                 ) -> Tuple[pd.DataFrame, Dict[str, Dict[pd.Timestamp, pd.Series]], Dict[str, Dict[pd.Timestamp, pd.Series]]]:
     """
     Point-in-time backtest with time-varying universe.
 
@@ -872,6 +925,9 @@ def backtest_pit(returns_wide: pd.DataFrame,
 
     daily_pnl = {n: np.full(T_total, np.nan) for n in strategies}
     weights_log: Dict[str, Dict[pd.Timestamp, pd.Series]] = \
+        {n: {} for n in strategies}
+    # drifted weights just before each rebalance (for accurate turnover reporting)
+    drifted_log: Dict[str, Dict[pd.Timestamp, pd.Series]] = \
         {n: {} for n in strategies}
     # last drifted state per strategy: (col_indices, weights)
     drifted: Dict[str, Optional[Tuple[np.ndarray, np.ndarray]]] = \
@@ -934,6 +990,8 @@ def backtest_pit(returns_wide: pd.DataFrame,
                 tc = 0.0
             else:
                 old_cols, old_w = drifted[name]
+                drifted_log[name][rebal_date] = pd.Series(
+                    old_w, index=permnos[old_cols], name=rebal_date)
                 union = np.union1d(old_cols, all_keep)
                 w_old_aligned = np.zeros(union.size)
                 w_new_aligned = np.zeros(union.size)
@@ -981,7 +1039,7 @@ def backtest_pit(returns_wide: pd.DataFrame,
               f"median={int(sz['with_history'].median())}  "
               f"max={sz['with_history'].max()}")
 
-    return daily, weights_log
+    return daily, weights_log, drifted_log
 
 
 # =============================================================================
@@ -1025,7 +1083,8 @@ def compute_metrics(daily_returns: pd.DataFrame,
 
 
 def compute_metrics_pit(daily_returns: pd.DataFrame,
-                        weights_log: Dict[str, Dict[pd.Timestamp, pd.Series]]
+                        weights_log: Dict[str, Dict[pd.Timestamp, pd.Series]],
+                        drifted_log: Optional[Dict[str, Dict[pd.Timestamp, pd.Series]]] = None,
                         ) -> pd.DataFrame:
     """
     Same headline metrics as compute_metrics, but for the PIT backtest where
@@ -1055,14 +1114,16 @@ def compute_metrics_pit(daily_returns: pd.DataFrame,
         max_dd = (cum / cum.cummax() - 1.0).min()
         calmar = ann_ret / abs(max_dd) if max_dd < 0 else np.nan
 
-        # turnover from sequence of Series with possibly different indices
+        # turnover: drifted weights before rebalance → target weights after
         wd = weights_log[name]
+        dl = drifted_log.get(name, {}) if drifted_log is not None else {}
         dates_sorted = sorted(wd.keys())
         if len(dates_sorted) >= 2:
             turnovers = []
             for i in range(1, len(dates_sorted)):
-                w0 = wd[dates_sorted[i - 1]]
-                w1 = wd[dates_sorted[i]]
+                date = dates_sorted[i]
+                w1 = wd[date]
+                w0 = dl.get(date, wd[dates_sorted[i - 1]])
                 aligned = pd.concat([w0.rename("a"), w1.rename("b")],
                                     axis=1).fillna(0.0)
                 turnovers.append((aligned["b"] - aligned["a"]).abs().sum())
@@ -1491,7 +1552,7 @@ def plot_backtest_results(daily: pd.DataFrame,
     _plt.plot_return_distribution(
         monthly, title=f"Monthly Return Distributions{suf}",
         save_path=f"{outdir}/return_dist.png",
-        subplot_order=["HMVA", "HMVA-mv", "EW", "SPY-100"])
+        subplot_order=["HMVA", "MVO-EK", "EW", "SPY-100"])
     plt.close("all")
 
     _plt.plot_correlation_heatmap(

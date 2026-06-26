@@ -35,7 +35,7 @@ RET_COL = "DlyRet"
 
 # Sample period
 START_DATE = "2000-01-01"
-END_DATE = "2025-01-01"
+END_DATE = "2024-01-01"
 
 # Default grid
 DEFAULT_LOOKBACKS = "126"
@@ -44,7 +44,7 @@ DEFAULT_COSTS = "0, 2, 5, 10, 20, 30"
 DEFAULT_REBALANCE = 21
 DEFAULT_TOP_K = 100
 
-DEFAULT_STRATEGIES = "EW, SPY-100, HMVA, HMVA-mv"
+DEFAULT_STRATEGIES = "EW, SPY-100, HMVA, HMVA-mv, MVO, GMV, HRP"
 
 BENCHMARK_STRATEGIES = {"EW", "SPY-100"}
 
@@ -96,13 +96,13 @@ def run_grid(returns_wide: pd.DataFrame,
             print(f"  strategies in this cell: {list(strategies.keys())}")
 
             try:
-                daily, weights = L.backtest_pit(
+                daily, weights, drifted = L.backtest_pit(
                     returns_wide, universe_fn, strategies,
                     lookback=lb, rebalance=rebalance,
                     min_history_days=max_lookback,
                     cost_bps=cost, rf_daily=rf_daily,
                     verbose=True)
-                metrics = L.compute_metrics_pit(daily, weights)
+                metrics = L.compute_metrics_pit(daily, weights, drifted)
 
                 # Primary baseline: EW
                 base_sr_ew  = metrics.loc["EW", "Sharpe"]  if "EW"    in metrics.index else np.nan

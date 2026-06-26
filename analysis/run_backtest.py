@@ -25,7 +25,7 @@ PRICE_COL = "DlyClose"
 RET_COL = "DlyRet"
 
 START_DATE = "2000-01-01"
-END_DATE = "2025-01-01"
+END_DATE = "2024-01-01"
 TOP_K = 100
 
 LOOKBACK = 126
@@ -96,24 +96,24 @@ def main(argv: List[str] = None) -> None:
     rf = riskfree_proxy(returns_wide.index)
     strategies = L.make_crsp_strategies(market_cap_wide=cap_wide)
 
-    daily, weights = L.backtest_pit(returns_wide, universe_fn, strategies,
-                                    lookback=args.lookback, rebalance=args.rebalance,
-                                    cost_bps=args.cost_bps, rf_daily=rf,
-                                    min_history_days=args.lookback)
+    daily, weights, drifted = L.backtest_pit(returns_wide, universe_fn, strategies,
+                                             lookback=args.lookback, rebalance=args.rebalance,
+                                             cost_bps=args.cost_bps, rf_daily=rf,
+                                             min_history_days=args.lookback)
 
     daily.to_csv(f"{outdir}/daily_excess_returns.csv")
 
-    metrics = L.compute_metrics_pit(daily, weights)
+    metrics = L.compute_metrics_pit(daily, weights, drifted)
     print("\n=== Performance summary ===")
     print(metrics.round(4).to_string())
     metrics.to_csv(f"{outdir}/metrics.csv")
     
-    if "mean" in SUBFOLDER_OUTPUT:
-        print("\n=== Tests HMVA vs others (excl. HMVA-mv) ===")
+    if "HMVA" in daily.columns:
+        print("\n=== Tests HMVA vs others ===")
         base_hmva = daily["HMVA"]
         rows = []
         for s in daily.columns:
-            if s in ("HMVA", "HMVA-mv"):
+            if s == "HMVA":
                 continue
             lw_diff, lw_p, ci_lo, ci_hi = L.lw_sharpe_test(base_hmva, daily[s], n_boot=2000, block=21)
             rows.append({
@@ -131,12 +131,12 @@ def main(argv: List[str] = None) -> None:
         print(test_df.round(4).to_string(index=False))
         test_df.to_csv(f"{outdir}/statistical_tests_hmva.csv", index=False)
 
-    if "var" in SUBFOLDER_OUTPUT:
-        print("\n=== Tests HMVA-mv vs others (excl. HMVA) ===")
+    if "HMVA-mv" in daily.columns:
+        print("\n=== Tests HMVA-mv vs others ===")
         base_mv = daily["HMVA-mv"]
         rows = []
         for s in daily.columns:
-            if s in ("HMVA-mv", "HMVA"):
+            if s == "HMVA-mv":
                 continue
             lw_diff, lw_p, ci_lo, ci_hi = L.lw_sharpe_test(base_mv, daily[s], n_boot=2000, block=21)
             rows.append({

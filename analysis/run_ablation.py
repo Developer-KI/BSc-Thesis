@@ -41,7 +41,7 @@ PRICE_COL        = "DlyClose"
 RET_COL          = "DlyRet"
 
 START_DATE    = "2000-01-01"
-END_DATE      = "2025-01-01"
+END_DATE      = "2024-01-01"
 TOP_K         = 100
 REBALANCE     = 21
 COST_BPS      = 0.0
@@ -134,14 +134,14 @@ def _run_pit(
     lookback: int,
     rf: pd.Series,
 ) -> tuple[pd.DataFrame, Dict, pd.DataFrame]:
-    daily, weights = L.backtest_pit(
+    daily, weights, drifted = L.backtest_pit(
         returns_wide, universe_fn, strategies,
         lookback=lookback, rebalance=REBALANCE,
         cost_bps=COST_BPS, rf_daily=rf,
         min_history_days=lookback,
         verbose=True,
     )
-    metrics = L.compute_metrics_pit(daily, weights)
+    metrics = L.compute_metrics_pit(daily, weights, drifted)
     return daily, weights, metrics
 
 
