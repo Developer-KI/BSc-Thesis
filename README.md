@@ -8,19 +8,7 @@ _Author: Kiril Ivanov · Supervisor: Dr. Sanders Barendse_
 
 ## HMVA Pipeline
 
-### Stage 1 — EWMA Pseudo-Returns
-
-Following the RiskMetrics (1996) approach, the return window is rescaled into a pseudo-return matrix with decay parameter θ = 2^(−1/T*θ) and half-life T*θ = T_r (set equal to the rebalance interval):
-
-```
-R̃_t = √(s_t · T) · R_t,   s_t = (1−θ)·θ^(T−1−t) / Σ(1−θ)·θ^i
-```
-
-The sample moments of R̃ recover the exponentially weighted moments of R. Setting the half-life equal to the rebalance interval means recent periods receive the largest weight, while older observations decay gradually rather than being discarded abruptly. This allows shrinkage estimators to be applied to R̃ as if it were an ordinary return matrix while inheriting exponential weighting automatically.
-
-This regularises the raw momentum signal toward the uninformative prior, dampening noise in cross-sectional return estimates.
-
-### Stage 2 — Top-Down Correlation-Minimising Tree
+### Stage 1 — Top-Down Correlation-Minimising Tree
 
 Builds a complete binary tree over assets using top-down recursive bipartition. At each node the split that minimises the estimated correlation between the two equal-weighted child portfolios is selected:
 
@@ -32,7 +20,7 @@ f(L, R) = Corr_EW(L, R) = Cov_EW(L, R) / √(Var_EW(L) · Var_EW(R))
 
 Clusters of up to n*bf = 10 assets use exhaustive search; larger clusters use an O(n²) contiguous-cut heuristic via 2D prefix sums (see \_Split Criterion Walkthrough* below).
 
-### Stage 3 — Sharpe-Ratio Capital Allocation
+### Stage 2 — Sharpe-Ratio Capital Allocation
 
 At each internal node, equal-weighted cluster Sharpe proxies are formed to reduce signal-estimation noise through cluster averaging:
 
@@ -44,7 +32,7 @@ where μ̄_BL(C) is the equal-weight mean BL return and σ_EW(C) is the equal-we
 
 The allocation fraction going to the left child L is Ŝ(L) / (Ŝ(L) + Ŝ(R)). If both proxies are zero or negative, allocation falls back to inverse-volatility bisection (risk-only mode). This risk-only variant is denoted **HMVA-mv**.
 
-### Stage 4 — Latent Weight Smoother
+### Stage 3     — Latent Weight Smoother
 
 Interprets rebalancing as a linear filtering problem for the latent portfolio weights. The smoothed allocation is:
 
