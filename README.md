@@ -39,10 +39,6 @@ pip install -r requirements.txt
 cd analysis
 ```
 
-### To only replicate the papers results
-
-Run all cells in makeall.ipynb
-
 ### Main strategy comparison
 
 ```bash
