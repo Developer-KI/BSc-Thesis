@@ -123,23 +123,3 @@ python run_split_comparison.py
 Outputs: `results/split_comparison/summary.csv`, `raw.csv`, approximation-ratio plots.
 
 ---
-
-## Data Inputs
-
-### `data/stock_daily_returns.csv` — CRSP daily file (not included)
-
-| Column     | Notes                                                 |
-| ---------- | ----------------------------------------------------- |
-| `PERMNO`   | CRSP unique stock identifier                          |
-| `DlyCalDt` | Calendar date (YYYY-MM-DD)                            |
-| `DlyClose` | Split-adjusted closing price (used if DlyRet missing) |
-| `DlyRet`   | Daily total return (preferred)                        |
-| `DlyCap`   | Market capitalisation (used for top-100 filtering)    |
-
-### `data/constituents.csv` — S&P 500 historical membership
-
-One row per (PERMNO, membership spell) with columns `permno`, `start`, `ending`. `UniverseFn(date)` intersects the membership table with the top-100 market cap filter to give the investable universe at each rebalance date, enforcing strict point-in-time constitution (no survivorship bias).
-
-Four hypothesis families are tested separately: (1) HMVA vs. return-based active strategies (MVO-EK, MHRP-EK); (2) HMVA vs. passive benchmarks (EW, SPY-100); (3) HMVA-mv vs. risk-only strategies (GMV-EK, HRP-E); (4) HMVA-mv vs. passive benchmarks. Rejection within one family is not interpreted as evidence for a global claim of superiority across all benchmarks.
-
----
